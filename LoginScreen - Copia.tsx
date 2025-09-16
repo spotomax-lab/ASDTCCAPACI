@@ -1,26 +1,86 @@
 import React, { useState } from 'react';
-import { View, Text, TextInput, TouchableOpacity, StyleSheet, Alert, Dimensions } from 'react-native';
+import { 
+  View, 
+  Text, 
+  TextInput, 
+  TouchableOpacity, 
+  StyleSheet, 
+  Alert, 
+  Dimensions, 
+  ActivityIndicator, 
+  KeyboardAvoidingView, 
+  ScrollView,
+  Platform,
+  Image
+} from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
+import { signInWithEmailAndPassword, sendPasswordResetEmail } from 'firebase/auth';
+import { auth } from './config/firebase';
 
 const { width, height } = Dimensions.get('window');
 
-const LoginScreen = ({ onLogin }) => {
+const LoginScreen = ({ navigation }) => {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [loading, setLoading] = useState(false);
 
-  const handleLogin = () => {
-    // Credenziali di test
-    const testEmail = 'mariorossi@email.com';
-    const testPassword = '123456';
-
-    if (email === testEmail && password === testPassword) {
-      onLogin();
-      Alert.alert('Accesso effettuato', 'Benvenuto Mario Rossi!');
-    } else if (!email || !password) {
+  const handleLogin = async () => {
+    if (!email || !password) {
       Alert.alert('Errore', 'Per favore inserisci email e password');
-    } else {
-      Alert.alert('Errore', 'Email o password non valide');
+      return;
+    }
+
+    setLoading(true);
+    try {navigation
+      const userCredential = await signInWithEmailAndPassword(auth, email, password);
+      const user = userCredential.user;
+      
+      // Navigazione alla schermata principale
+          navigation.navigate('MainTabs');
+      
+    } catch (error) {
+      console.log('Errore completo:', error);
+      let errorMessage = 'Errore durante il login';
+      
+      if (error.code === 'auth/invalid-email') {
+        errorMessage = 'Email non valida';
+      } else if (error.code === 'auth/user-disabled') {
+        errorMessage = 'Account disabilitato';
+      } else if (error.code === 'auth/user-not-found') {
+        errorMessage = 'Utente non trovato';
+      } else if (error.code === 'auth/wrong-password') {
+        errorMessage = 'Password errata';
+      } else if (error.code === 'auth/too-many-requests') {
+        errorMessage = 'Troppi tentativi falliti. Riprova più tardi.';
+      }
+      
+      Alert.alert('Errore', errorMessage);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handlePasswordReset = async () => {
+    if (!email) {
+      Alert.alert('Errore', 'Inserisci la tua email per reimpostare la password');
+      return;
+    }
+
+    try {
+      await sendPasswordResetEmail(auth, email);
+      Alert.alert('Email inviata', 'Controlla la tua casella email per reimpostare la password');
+    } catch (error) {
+      console.error('Errore nel reset password:', error);
+      let errorMessage = 'Impossibile inviare l\'email di reset';
+      
+      if (error.code === 'auth/user-not-found') {
+        errorMessage = 'Nessun account associato a questa email';
+      } else if (error.code === 'auth/invalid-email') {
+        errorMessage = 'Email non valida';
+      }
+      
+      Alert.alert('Errore', errorMessage);
     }
   };
 
@@ -31,67 +91,90 @@ const LoginScreen = ({ onLogin }) => {
       end={{ x: 1, y: 1 }}
       style={styles.gradient}
     >
-      <View style={styles.container}>
-        <View style={styles.loginBox}>
-          {/* Logo */}
-          <View style={styles.logoContainer}>
-            <View style={styles.logoCircle}>
-              <Text style={styles.logoEmoji}>🎾</Text>
+      <KeyboardAvoidingView
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        style={styles.keyboardAvoidingView}
+        keyboardVerticalOffset={Platform.OS === 'ios' ? 64 : 0}
+      >
+        <ScrollView contentContainerStyle={styles.scrollViewContent}>
+          <View style={styles.container}>
+            <View style={styles.loginBox}>
+              {/* Logo */}
+              <View style={styles.logoContainer}>
+                <View style={styles.logoCircle}>
+                  <Image 
+                    source={{ uri: 'https://i.imgur.com/R9HOnGx.png' }} 
+                    style={styles.logoImage}
+                    resizeMode="contain"
+                  />
+                </View>
+                <Text style={styles.clubName}>A.S.D. T.C. CAPACI</Text>
+                <Text style={styles.clubSubtitle}>Tennis Club</Text>
+                <Text style={styles.subtitle}>Accedi al tuo account</Text>
+              </View>
+
+              {/* Form di login */}
+              <View style={styles.formContainer}>
+                <View style={styles.inputContainer}>
+                  <Ionicons name="mail-outline" size={24} color="#64748b" style={styles.inputIcon} />
+                  <TextInput
+                    style={styles.input}
+                    placeholder="Email"
+                    placeholderTextColor="#64748b"
+                    value={email}
+                    onChangeText={setEmail}
+                    keyboardType="email-address"
+                    autoCapitalize="none"
+                    returnKeyType="next"
+                  />
+                </View>
+
+                <View style={styles.inputContainer}>
+                  <Ionicons name="lock-closed-outline" size={24} color="#64748b" style={styles.inputIcon} />
+                  <TextInput
+                    style={styles.input}
+                    placeholder="Password"
+                    placeholderTextColor="#64748b"
+                    value={password}
+                    onChangeText={setPassword}
+                    secureTextEntry
+                    returnKeyType="done"
+                    onSubmitEditing={handleLogin}
+                  />
+                </View>
+
+                <TouchableOpacity 
+                  style={[styles.loginButton, loading && styles.loginButtonDisabled]} 
+                  onPress={handleLogin}
+                  disabled={loading}
+                >
+                  {loading ? (
+                    <ActivityIndicator color="white" />
+                  ) : (
+                    <Text style={styles.loginButtonText}>Accedi</Text>
+                  )}
+                </TouchableOpacity>
+
+                <TouchableOpacity 
+                  style={styles.passwordResetLink}
+                  onPress={() => handlePasswordReset()}
+                >
+                  <Text style={styles.passwordResetText}>Hai dimenticato la password?</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity 
+                  style={styles.signupLink}
+                  onPress={() => navigation.navigate('Signup')}
+                >
+                  <Text style={styles.signupLinkText}>
+                    Non hai un account? Registrati
+                  </Text>
+                </TouchableOpacity>
+              </View>
             </View>
-            <Text style={styles.clubName}>A.S.D. T.C. CAPACI</Text>
-            <Text style={styles.clubSubtitle}>Tennis Club</Text>
-            <Text style={styles.subtitle}>Accedi al tuo account</Text>
           </View>
-
-          {/* Form di login */}
-          <View style={styles.formContainer}>
-            <View style={styles.inputContainer}>
-              <Ionicons name="mail-outline" size={24} color="#64748b" style={styles.inputIcon} />
-              <TextInput
-                style={styles.input}
-                placeholder="Email"
-                placeholderTextColor="#64748b"
-                value={email}
-                onChangeText={setEmail}
-                keyboardType="email-address"
-                autoCapitalize="none"
-              />
-            </View>
-
-            <View style={styles.inputContainer}>
-              <Ionicons name="lock-closed-outline" size={24} color="#64748b" style={styles.inputIcon} />
-              <TextInput
-                style={styles.input}
-                placeholder="Password"
-                placeholderTextColor="#64748b"
-                value={password}
-                onChangeText={setPassword}
-                secureTextEntry
-              />
-            </View>
-
-            <TouchableOpacity style={styles.loginButton} onPress={handleLogin}>
-              <Text style={styles.loginButtonText}>Accedi</Text>
-            </TouchableOpacity>
-
-            <Text style={styles.demoText}>
-              Demo: mariorossi@email.com / 123456
-            </Text>
-
-            <TouchableOpacity style={styles.forgotPassword}>
-              <Text style={styles.forgotPasswordText}>Password dimenticata?</Text>
-            </TouchableOpacity>
-          </View>
-
-          {/* Footer */}
-          <View style={styles.footer}>
-            <Text style={styles.footerText}>Non hai un account? </Text>
-            <TouchableOpacity>
-              <Text style={styles.signupText}>Registrati</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      </View>
+        </ScrollView>
+      </KeyboardAvoidingView>
     </LinearGradient>
   );
 };
@@ -101,6 +184,13 @@ const styles = StyleSheet.create({
     flex: 1,
     width: width,
     height: height,
+  },
+  keyboardAvoidingView: {
+    flex: 1,
+  },
+  scrollViewContent: {
+    flexGrow: 1,
+    justifyContent: 'center',
   },
   container: {
     flex: 1,
@@ -125,24 +215,23 @@ const styles = StyleSheet.create({
   },
   logoContainer: {
     alignItems: 'center',
-    marginBottom: 40,
+    marginBottom: 30,
   },
   logoCircle: {
-    width: 80,
-    height: 80,
-    borderRadius: 40,
-    backgroundColor: '#dbeafe',
+    width: 100,
+    height: 100,
+    borderRadius: 50,
+    backgroundColor: 'white',
     justifyContent: 'center',
     alignItems: 'center',
     marginBottom: 16,
+    borderWidth: 2,
+    borderColor: '#dbeafe',
   },
-  logoEmoji: {
-    fontSize: 32,
-    textShadowColor: 'rgba(0, 0, 0, 0.4)',
-    textShadowOffset: { width: 0, height: 1 },
-    textShadowRadius: 4,
-    // Forziamo il colore verde scuro per la pallina
-    color: '#14532d', // Verde più scuro per contrastare con lo sfondo blu
+  logoImage: {
+    width: 99,
+    height: 99,
+    borderRadius: 10,
   },
   clubName: {
     fontSize: 22,
@@ -164,7 +253,7 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
   formContainer: {
-    marginBottom: 30,
+    marginBottom: 20,
   },
   inputContainer: {
     flexDirection: 'row',
@@ -177,7 +266,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
   },
   inputIcon: {
-    marginRight: 12,
+    marginRight: 8,
   },
   input: {
     flex: 1,
@@ -193,37 +282,28 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginBottom: 16,
   },
+  loginButtonDisabled: {
+    backgroundColor: '#93c5fd',
+  },
   loginButtonText: {
     color: 'white',
     fontSize: 16,
     fontWeight: 'bold',
   },
-  demoText: {
-    textAlign: 'center',
-    color: '#64748b',
-    fontSize: 14,
-    fontStyle: 'italic',
+  passwordResetLink: {
+    alignItems: 'center',
     marginBottom: 16,
   },
-  forgotPassword: {
+  passwordResetText: {
+    color: '#3b82f6',
+    fontSize: 14,
+  },
+  signupLink: {
     alignItems: 'center',
   },
-  forgotPasswordText: {
+  signupLinkText: {
     color: '#3b82f6',
     fontSize: 14,
-  },
-  footer: {
-    flexDirection: 'row',
-    justifyContent: 'center',
-  },
-  footerText: {
-    color: '#64748b',
-    fontSize: 14,
-  },
-  signupText: {
-    color: '#3b82f6',
-    fontSize: 14,
-    fontWeight: 'bold',
   },
 });
 

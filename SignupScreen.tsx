@@ -10,12 +10,17 @@ import {
   ActivityIndicator, 
   KeyboardAvoidingView, 
   ScrollView,
-  Platform 
+  Platform,
+  Image
 } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
-import { createUserWithEmailAndPassword, updateProfile } from 'firebase/auth';
-import { doc, setDoc } from 'firebase/firestore';
+import { 
+  createUserWithEmailAndPassword, 
+  updateProfile
+} from 'firebase/auth';
+import { doc, setDoc, serverTimestamp } from 'firebase/firestore';
 import { auth, db } from './config/firebase';
 
 const { width, height } = Dimensions.get('window');
@@ -27,57 +32,67 @@ const SignupScreen = ({ navigation }) => {
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
 
-  const handleSignup = async () => {
-    if (!nome || !cognome || !email || !password) {
-      Alert.alert('Errore', 'Per favore compila tutti i campi');
-      return;
-    }
+const handleSignup = async () => {
+  // Validazioni minime (mantieni le tue se ne hai di aggiuntive)
+  if (!nome || !cognome || !email || !password) {
+    Alert.alert('Errore', 'Per favore compila tutti i campi');
+    return;
+  }
+  if (password.length < 6) {
+    Alert.alert('Errore', 'La password deve essere di almeno 6 caratteri');
+    return;
+  }
 
-    if (password.length < 6) {
-      Alert.alert('Errore', 'La password deve essere di almeno 6 caratteri');
-      return;
-    }
+  setLoading(true);
+  try {
+    // Pulizia prudenziale di eventuale fallback precedente
+    await AsyncStorage.removeItem('pendingProfile');
 
-    setLoading(true);
+    const userCredential = await createUserWithEmailAndPassword(auth, email.trim(), password);
+    const uid = userCredential.user.uid;
+
+    // Imposta displayName (facoltativo ma utile)
     try {
-      const userCredential = await createUserWithEmailAndPassword(auth, email, password);
-      
-      await updateProfile(userCredential.user, {
-        displayName: `${nome} ${cognome}`
-      });
+      await updateProfile(userCredential.user, { displayName: `${nome} ${cognome}`.trim() });
+    } catch {}
 
-      await setDoc(doc(db, 'users', userCredential.user.uid), {
+    // Fallback locale per il primo render del profilo
+    await AsyncStorage.setItem('pendingProfile', JSON.stringify({
+      nome, cognome, email: email.trim()
+    }));
+
+    // Crea/aggiorna il documento utente PRIMA di uscire da questa schermata (evita race)
+    await setDoc(
+      doc(db, 'users', uid),
+      {
         nome,
         cognome,
-        email,
+        email: email.trim(),
         isAbbonato: true,
-        dataIscrizione: new Date(),
+        dataIscrizione: serverTimestamp(),
         privacyAccepted: false,
-        profileCompleted: false
-      });
+        profileCompleted: false, // AppNavigator mostrerà ProfiloMandatory
+        role: 'user'
+      },
+      { merge: true }
+    );
 
-      // Naviga alla schermata Profilo invece di mostrare un alert
-      navigation.navigate('Profilo', { mandatory: true });
-      
-    } catch (error) {
-      console.log('Errore completo:', error);
-      let errorMessage = 'Errore durante la registrazione';
-      
-      if (error.code === 'auth/email-already-in-use') {
-        errorMessage = 'Email già registrata';
-      } else if (error.code === 'auth/invalid-email') {
-        errorMessage = 'Email non valida';
-      } else if (error.code === 'auth/weak-password') {
-        errorMessage = 'Password troppo debole';
-      } else if (error.code === 'auth/operation-not-allowed') {
-        errorMessage = 'Registrazione non abilitata';
-      }
-      
-      Alert.alert('Errore', errorMessage);
-    } finally {
-      setLoading(false);
-    }
-  };
+    // LOG A — conferma creazione doc
+    console.log('[SIGNUP] user doc creato:', uid, { nome, cognome, email: email.trim() });
+
+    // NON navighiamo manualmente: l'AppNavigator mostrerà ProfiloMandatory (profileCompleted=false)
+    Alert.alert('Registrazione completata', 'Account creato. Completa ora il tuo profilo.');
+  } catch (error) {
+    console.error('Errore registrazione:', error);
+    let errorMessage = 'Errore durante la registrazione';
+    if (error?.code === 'auth/email-already-in-use') errorMessage = 'Questa email è già registrata';
+    else if (error?.code === 'auth/invalid-email') errorMessage = 'Email non valida';
+    else if (error?.code === 'auth/weak-password') errorMessage = 'La password è troppo debole';
+    Alert.alert('Errore', errorMessage);
+  } finally {
+    setLoading(false);
+  }
+};
 
   return (
     <LinearGradient
@@ -97,7 +112,11 @@ const SignupScreen = ({ navigation }) => {
               {/* Logo */}
               <View style={styles.logoContainer}>
                 <View style={styles.logoCircle}>
-                  <Text style={styles.logoEmoji}>🎾</Text>
+                  <Image 
+                    source={{ uri: 'https://i.imgur.com/R9HOnGx.png' }} 
+                    style={styles.logoImage}
+                    resizeMode="contain"
+                  />
                 </View>
                 <Text style={styles.clubName}>A.S.D. T.C. CAPACI</Text>
                 <Text style={styles.clubSubtitle}>Tennis Club</Text>
@@ -181,10 +200,9 @@ const SignupScreen = ({ navigation }) => {
                   </Text>
                 </TouchableOpacity>
 
-                {/* Aggiunta della dicitura di avviso */}
                 <Text style={styles.warningText}>
                   Le registrazioni effettuate con Cognome e Nome incompleti o non reali saranno eliminate dagli amministratori.
-                </Text>
+                  </Text>
               </View>
             </View>
           </View>
@@ -215,6 +233,7 @@ const styles = StyleSheet.create({
   },
   signupBox: {
     backgroundColor: 'white',
+    marginTop: 40,
     borderRadius: 20,
     padding: 25,
     width: '100%',
@@ -233,20 +252,20 @@ const styles = StyleSheet.create({
     marginBottom: 30,
   },
   logoCircle: {
-    width: 80,
-    height: 80,
-    borderRadius: 40,
-    backgroundColor: '#dbeafe',
+    width: 100,
+    height: 100,
+    borderRadius: 50,
+    backgroundColor: 'white',
     justifyContent: 'center',
     alignItems: 'center',
     marginBottom: 16,
+    borderWidth: 2,
+    borderColor: '#dbeafe',
   },
-  logoEmoji: {
-    fontSize: 32,
-    textShadowColor: 'rgba(0, 0, 0, 0.4)',
-    textShadowOffset: { width: 0, height: 1 },
-    textShadowRadius: 4,
-    color: '#14532d',
+  logoImage: {
+    width: 99,
+    height: 99,
+    borderRadius: 10,
   },
   clubName: {
     fontSize: 22,
@@ -264,7 +283,7 @@ const styles = StyleSheet.create({
   },
   subtitle: {
     fontSize: 16,
-    color: '#64748b',
+    color: ' #64748b',
     textAlign: 'center',
   },
   formContainer: {

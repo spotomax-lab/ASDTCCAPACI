@@ -4,15 +4,16 @@ import { NavigationContainer } from '@react-navigation/native';
 import { createMaterialTopTabNavigator } from '@react-navigation/material-top-tabs';
 import { createStackNavigator } from '@react-navigation/stack';
 import { Ionicons } from '@expo/vector-icons';
-import { Platform, View, Text } from 'react-native';
-import React from 'react';
+import { Platform, View, Text, ActivityIndicator, StyleSheet } from 'react-native';
+import React, { useEffect, useState } from 'react';
 
 // Import delle schermate
 import LoginScreen from './LoginScreen';
 import SignupScreen from './SignupScreen';
-import BookingScreen from './BookingScreen';
+import BookingScreen from './screens/BookingScreen';
 import PrenotazioniScreen from './PrenotazioniScreen';
 import ProfiloScreen from './ProfiloScreen';
+import AdminScreen from './AdminScreen';
 
 // Import del contesto di autenticazione
 import { AuthProvider, useAuth } from './context/AuthContext';
@@ -21,8 +22,27 @@ import { AuthProvider, useAuth } from './context/AuthContext';
 const Tab = createMaterialTopTabNavigator();
 const Stack = createStackNavigator();
 
+// Stili per gli errori
+const styles = StyleSheet.create({
+  errorContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+  },
+  errorText: {
+    fontSize: 18,
+    color: '#ef4444',
+    marginBottom: 20,
+    textAlign: 'center',
+  },
+});
+
 // Componente personalizzato per le tab
 const CustomTabBar = ({ state, descriptors, navigation, position }) => {
+  const { userData } = useAuth();
+  const isAdmin = userData && userData.role === 'admin';
+
   return (
     <View style={{
       flexDirection: 'row',
@@ -33,6 +53,9 @@ const CustomTabBar = ({ state, descriptors, navigation, position }) => {
       height: Platform.OS === 'ios' ? 100 : 90,
     }}>
       {state.routes.map((route, index) => {
+        // Skip Admin tab if user is not admin
+        if (route.name === 'Admin' && !isAdmin) return null;
+        
         const { options } = descriptors[route.key];
         const label = options.tabBarLabel !== undefined
           ? options.tabBarLabel
@@ -85,7 +108,8 @@ const CustomTabBar = ({ state, descriptors, navigation, position }) => {
 
 // Componente per le tab principali dell'app
 function MainTabs() {
-  const { logout } = useAuth();
+  const { logout, userData } = useAuth();
+  const isAdmin = userData && userData.role === 'admin';
 
   return (
     <Tab.Navigator
@@ -100,6 +124,8 @@ function MainTabs() {
             iconName = focused ? 'list' : 'list-outline';
           } else if (route.name === 'Profilo') {
             iconName = focused ? 'person' : 'person-outline';
+          } else if (route.name === 'Admin') {
+            iconName = focused ? 'shield' : 'shield-outline';
           } else if (route.name === 'Logout') {
             iconName = focused ? 'log-out' : 'log-out-outline';
           }
@@ -124,6 +150,15 @@ function MainTabs() {
           title: 'Prenotazioni',
         }}
       />
+      {isAdmin && (
+        <Tab.Screen 
+          name="Admin" 
+          component={AdminScreen}
+          options={{
+            title: 'Admin',
+          }}
+        />
+      )}
       <Tab.Screen 
         name="Profilo" 
         component={ProfiloScreen}
@@ -150,13 +185,40 @@ function MainTabs() {
 
 // Componente principale dell'app che gestisce la navigazione
 function AppNavigator() {
-  const { user } = useAuth();
+  const { user, userData, loading } = useAuth();
+  const [checkingProfile, setCheckingProfile] = useState(true);
+
+  useEffect(() => {
+    if (!loading) {
+      setCheckingProfile(false);
+    }
+  }, [loading]);
+
+  if (checkingProfile) {
+    return (
+      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
+        <ActivityIndicator size="large" color="#3b82f6" />
+        <Text style={{ marginTop: 10 }}>Caricamento...</Text>
+      </View>
+    );
+  }
 
   return (
     <Stack.Navigator screenOptions={{ headerShown: false }}>
       {user ? (
-        // Utente autenticato - mostra le tab principali
-        <Stack.Screen name="MainTabs" component={MainTabs} />
+        // Utente autenticato
+        userData?.profileCompleted ? (
+          // Profilo completato - mostra le tab principali
+          <Stack.Screen name="MainTabs" component={MainTabs} />
+        ) : (
+          // Profilo non completato - mostra la schermata profilo obbligatoria
+          <Stack.Screen name="ProfiloMandatory" 
+            component={ProfiloScreen}
+            key={`profilo-${user?.uid ?? 'anon'}`}
+            initialParams={{ uid: user?.uid ?? null, mandatory: true }}
+            options={{ gestureEnabled: false }}
+          />
+        )
       ) : (
         // Utente non autenticato - mostra stack di autenticazione
         <>
@@ -164,11 +226,6 @@ function AppNavigator() {
           <Stack.Screen name="Signup" component={SignupScreen} />
         </>
       )}
-      {/* Aggiungi lo screen Profilo come schermata separata nello stack */}
-      <Stack.Screen 
-        name="Profilo" 
-        component={ProfiloScreen}
-      />
     </Stack.Navigator>
   );
 }

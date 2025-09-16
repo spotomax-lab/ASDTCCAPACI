@@ -1,0 +1,22 @@
+AsdTcCapaci/
+├── admin/
+│   └── BookingManagement.tsx
+│   └── CalendarManagement.tsx
+│   └── SlotConfigurationScreen.tsx
+├── config/
+│   └── firebase.js
+│   └── firebaseSchema.js
+├── context/
+│   └── AuthContext.js
+├── screens/
+│   └── BookingScreen.tsx
+├── utils/
+│   └── dateTimeHelpers.js
+└── AdminScreen.tsx
+└── App.tsx
+└── LoginScreen.tsx
+└── PrenotazioniScreen.tsx
+└── ProfiloScreen.tsx
+└── SignupScreen.tsx.
+└── tsconfig.json
+└── altri-file..

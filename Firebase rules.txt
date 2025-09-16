@@ -1,0 +1,57 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Funzione di utilità per verificare se l'utente è autenticato
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    // Funzione per verificare se l'utente è admin
+    function isAdmin() {
+      return isAuthenticated() && 
+             exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+             get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+    }
+    
+    // Funzione per verificare se l'utente sta accedendo ai propri dati
+    function isSelf(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    // Collezione USERS
+    match /users/{userId} {
+      allow read: if isSelf(userId) || isAdmin();
+      allow write: if isSelf(userId) || isAdmin();
+      
+      // Validazione dei dati per gli utenti non admin
+      allow create: if request.auth != null && 
+        request.auth.uid == userId && 
+        (request.resource.data.role == 'user' || request.resource.data.role == null);
+    }
+
+    // Collezione COURTS
+    match /courts/{courtId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+
+    // Collezione SLOTCONFIGURATIONS (nota: nome corretto dalla tua costante)
+    match /slotConfigurations/{slotId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+
+    // Collezione BOOKINGS
+    match /bookings/{bookingId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated() && request.resource.data.userId == request.auth.uid;
+      allow update, delete: if isSelf(resource.data.userId) || isAdmin();
+    }
+
+    // Collezione BLOCKEDSLOTS (nota: nome corretto dalla tua costante)
+    match /blockedSlots/{blockId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+  }
+}

@@ -10,11 +10,12 @@ import {
   ActivityIndicator, 
   KeyboardAvoidingView, 
   ScrollView,
-  Platform 
+  Platform,
+  Image
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
-import { signInWithEmailAndPassword } from 'firebase/auth';
+import { signInWithEmailAndPassword, sendPasswordResetEmail } from 'firebase/auth';
 import { auth } from './config/firebase';
 
 const { width, height } = Dimensions.get('window');
@@ -31,10 +32,13 @@ const LoginScreen = ({ navigation }) => {
     }
 
     setLoading(true);
-    try {
-      await signInWithEmailAndPassword(auth, email, password);
-      Alert.alert('Accesso effettuato', 'Benvenuto!');
+    try {navigation
+      const userCredential = await signInWithEmailAndPassword(auth, email, password);
+      const user = userCredential.user;
+      
+     
     } catch (error) {
+      console.log('Errore completo:', error);
       let errorMessage = 'Errore durante il login';
       
       if (error.code === 'auth/invalid-email') {
@@ -45,11 +49,36 @@ const LoginScreen = ({ navigation }) => {
         errorMessage = 'Utente non trovato';
       } else if (error.code === 'auth/wrong-password') {
         errorMessage = 'Password errata';
+      } else if (error.code === 'auth/too-many-requests') {
+        errorMessage = 'Troppi tentativi falliti. Riprova più tardi.';
       }
       
       Alert.alert('Errore', errorMessage);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handlePasswordReset = async () => {
+    if (!email) {
+      Alert.alert('Errore', 'Inserisci la tua email per reimpostare la password');
+      return;
+    }
+
+    try {
+      await sendPasswordResetEmail(auth, email);
+      Alert.alert('Email inviata', 'Controlla la tua casella email per reimpostare la password');
+    } catch (error) {
+      console.error('Errore nel reset password:', error);
+      let errorMessage = 'Impossibile inviare l\'email di reset';
+      
+      if (error.code === 'auth/user-not-found') {
+        errorMessage = 'Nessun account associato a questa email';
+      } else if (error.code === 'auth/invalid-email') {
+        errorMessage = 'Email non valida';
+      }
+      
+      Alert.alert('Errore', errorMessage);
     }
   };
 
@@ -71,7 +100,11 @@ const LoginScreen = ({ navigation }) => {
               {/* Logo */}
               <View style={styles.logoContainer}>
                 <View style={styles.logoCircle}>
-                  <Text style={styles.logoEmoji}>🎾</Text>
+                  <Image 
+                    source={{ uri: 'https://i.imgur.com/R9HOnGx.png' }} 
+                    style={styles.logoImage}
+                    resizeMode="contain"
+                  />
                 </View>
                 <Text style={styles.clubName}>A.S.D. T.C. CAPACI</Text>
                 <Text style={styles.clubSubtitle}>Tennis Club</Text>
@@ -120,16 +153,20 @@ const LoginScreen = ({ navigation }) => {
                   )}
                 </TouchableOpacity>
 
-                <TouchableOpacity style={styles.forgotPassword}>
-                  <Text style={styles.forgotPasswordText}>Password dimenticata?</Text>
+                <TouchableOpacity 
+                  style={styles.passwordResetLink}
+                  onPress={() => handlePasswordReset()}
+                >
+                  <Text style={styles.passwordResetText}>Hai dimenticato la password?</Text>
                 </TouchableOpacity>
-              </View>
 
-              {/* Footer */}
-              <View style={styles.footer}>
-                <Text style={styles.footerText}>Non hai un account? </Text>
-                <TouchableOpacity onPress={() => navigation.navigate('Signup')}>
-                  <Text style={styles.signupText}>Registrati</Text>
+                <TouchableOpacity 
+                  style={styles.signupLink}
+                  onPress={() => navigation.navigate('Signup')}
+                >
+                  <Text style={styles.signupLinkText}>
+                    Non hai un account? Registrati
+                  </Text>
                 </TouchableOpacity>
               </View>
             </View>
@@ -176,23 +213,23 @@ const styles = StyleSheet.create({
   },
   logoContainer: {
     alignItems: 'center',
-    marginBottom: 40,
+    marginBottom: 30,
   },
   logoCircle: {
-    width: 80,
-    height: 80,
-    borderRadius: 40,
-    backgroundColor: '#dbeafe',
+    width: 100,
+    height: 100,
+    borderRadius: 50,
+    backgroundColor: 'white',
     justifyContent: 'center',
     alignItems: 'center',
     marginBottom: 16,
+    borderWidth: 2,
+    borderColor: '#dbeafe',
   },
-  logoEmoji: {
-    fontSize: 32,
-    textShadowColor: 'rgba(0, 0, 0, 0.4)',
-    textShadowOffset: { width: 0, height: 1 },
-    textShadowRadius: 4,
-    color: '#14532d',
+  logoImage: {
+    width: 99,
+    height: 99,
+    borderRadius: 10,
   },
   clubName: {
     fontSize: 22,
@@ -214,7 +251,7 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
   formContainer: {
-    marginBottom: 30,
+    marginBottom: 20,
   },
   inputContainer: {
     flexDirection: 'row',
@@ -227,7 +264,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
   },
   inputIcon: {
-    marginRight: 12,
+    marginRight: 8,
   },
   input: {
     flex: 1,
@@ -251,26 +288,20 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: 'bold',
   },
-  forgotPassword: {
+  passwordResetLink: {
     alignItems: 'center',
-    marginBottom: 20,
+    marginBottom: 16,
   },
-  forgotPasswordText: {
+  passwordResetText: {
     color: '#3b82f6',
     fontSize: 14,
   },
-  footer: {
-    flexDirection: 'row',
-    justifyContent: 'center',
+  signupLink: {
+    alignItems: 'center',
   },
-  footerText: {
-    color: '#64748b',
-    fontSize: 14,
-  },
-  signupText: {
+  signupLinkText: {
     color: '#3b82f6',
     fontSize: 14,
-    fontWeight: 'bold',
   },
 });
 

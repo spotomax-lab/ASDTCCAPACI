@@ -20,7 +20,8 @@
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#ffffff"
       },
-      "edgeToEdgeEnabled": true
+      "edgeToEdgeEnabled": true,
+      "package": "com.silmarillon.AsdTcCapaci"
     },
     "web": {
       "favicon": "./assets/favicon.png"
@@ -30,6 +31,13 @@
         "projectId": "5b9072ad-68c9-451d-a0a8-b0c48e1c397f"
       }
     },
-    "owner": "silmarillon"
+    "owner": "silmarillon",
+    "plugins": [
+      "expo-font"
+    ],
+    "runtimeVersion": "1.0.0",
+    "updates": {
+      "url": "https://u.expo.dev/5b9072ad-68c9-451d-a0a8-b0c48e1c397f"
+    }
   }
 }

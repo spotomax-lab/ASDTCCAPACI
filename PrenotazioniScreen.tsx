@@ -1,17 +1,18 @@
 import React, { useState, useEffect } from 'react';
-import { View, Text, FlatList, StyleSheet, ActivityIndicator, Alert, TouchableOpacity } from 'react-native';
+import { View, Text, FlatList, StyleSheet, ActivityIndicator, Alert, TouchableOpacity, RefreshControl } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { collection, query, where, orderBy, onSnapshot } from 'firebase/firestore';
+import { collection, query, where, orderBy, onSnapshot, doc, updateDoc } from 'firebase/firestore';
 import { db } from './config/firebase';
 import { useAuth } from './context/AuthContext';
 
 const PrenotazioniScreen = () => {
   const [prenotazioni, setPrenotazioni] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState(null);
   const { user } = useAuth();
 
-  useEffect(() => {
+  const fetchPrenotazioni = () => {
     if (!user) {
       setLoading(false);
       return;
@@ -44,67 +45,39 @@ const PrenotazioniScreen = () => {
           });
           setPrenotazioni(prenotazioniList);
           setLoading(false);
+          setRefreshing(false);
           setError(null);
         },
         (error) => {
-          if (error.code === 'failed-precondition' || error.message.includes('index')) {
-            console.log('Indice non ancora pronto, uso query semplificata');
-            
-            // Query semplificata senza orderBy
-            const simpleQ = query(
-              collection(db, 'bookings'),
-              where('userId', '==', user.uid)
-            );
-            
-            const newUnsubscribe = onSnapshot(
-              simpleQ,
-              (querySnapshot) => {
-                const prenotazioniList = [];
-                querySnapshot.forEach((doc) => {
-                  const data = doc.data();
-                  prenotazioniList.push({ 
-                    id: doc.id, 
-                    ...data,
-                    createdAt: data.createdAt?.toDate ? data.createdAt.toDate() : data.createdAt
-                  });
-                });
-                
-                // Ordina manualmente per data in ordine crescente (dalla più vicina)
-                prenotazioniList.sort((a, b) => {
-                  return a.date.localeCompare(b.date); // Ordine crescente
-                });
-                
-                setPrenotazioni(prenotazioniList);
-                setLoading(false);
-                setError(null);
-              },
-              (error) => {
-                console.error('Errore nel fetch semplificato:', error);
-                setLoading(false);
-                setError(error.message);
-              }
-            );
-            
-            unsubscribe = newUnsubscribe;
-          } else {
-            console.error('Errore nel fetch delle prenotazioni:', error);
-            setLoading(false);
-            setError(error.message);
-          }
+          console.error('Errore nel fetch delle prenotazioni:', error);
+          setLoading(false);
+          setRefreshing(false);
+          setError(error.message);
         }
       );
     } catch (error) {
       console.error('Errore nella query:', error);
       setLoading(false);
+      setRefreshing(false);
       setError(error.message);
     }
 
+    return unsubscribe;
+  };
+
+  useEffect(() => {
+    const unsubscribe = fetchPrenotazioni();
     return () => {
       if (unsubscribe && typeof unsubscribe === 'function') {
         unsubscribe();
       }
     };
   }, [user]);
+
+  const onRefresh = () => {
+    setRefreshing(true);
+    fetchPrenotazioni();
+  };
 
   const formatDate = (dateString) => {
     try {
@@ -140,52 +113,125 @@ const PrenotazioniScreen = () => {
     }
   };
 
-  const calculateTimeRange = (slots) => {
-    if (!slots || !Array.isArray(slots) || slots.length === 0) {
-      return { start: 'N/A', end: 'N/A', duration: '0 ore' };
+  const canDeleteBooking = (prenotazione) => {
+    const now = new Date();
+    
+    // Controlla se è entro 1 ora dalla creazione
+    const createdTime = prenotazione.createdAt?.toDate ? prenotazione.createdAt.toDate() : new Date(prenotazione.createdAt);
+    const oneHourAfterCreation = new Date(createdTime.getTime() + 60 * 60 * 1000);
+    
+    if (now < oneHourAfterCreation) {
+      return { canDelete: true, type: 'eliminata' };
+    }
+    
+    // Controlla se mancano più di 2 ore all'inizio della prenotazione
+    const bookingDate = new Date(prenotazione.date);
+    const [hours, minutes] = prenotazione.startTime.split(':').map(Number);
+    bookingDate.setHours(hours, minutes, 0, 0);
+    
+    const twoHoursBeforeBooking = new Date(bookingDate.getTime() - 2 * 60 * 60 * 1000);
+    
+    if (now < twoHoursBeforeBooking) {
+      return { canDelete: true, type: 'cancellata' };
+    }
+    
+    return { canDelete: false, type: null };
+  };
+
+  const handleDeleteBooking = async (prenotazione) => {
+    const { canDelete, type } = canDeleteBooking(prenotazione);
+    
+    if (!canDelete) {
+      Alert.alert('Impossibile cancellare', 'Non è più possibile cancellare questa prenotazione');
+      return;
     }
 
-    const sortedSlots = [...slots].sort();
-    const start = sortedSlots[0];
-    const lastSlot = sortedSlots[slots.length - 1];
-
-    const [lastHour, lastMinute] = lastSlot.split(':').map(Number);
-    const endTime = new Date(0, 0, 0, lastHour, lastMinute + 30);
-    const end = `${endTime.getHours().toString().padStart(2, '0')}:${endTime.getMinutes().toString().padStart(2, '0')}`;
-
-    const totalMinutes = slots.length * 30;
-    const hours = Math.floor(totalMinutes / 60);
-    const minutes = totalMinutes % 60;
-
-    let durationStr = '';
-    if (hours > 0) {
-      durationStr += `${hours} ${hours === 1 ? 'ora' : 'ore'}`;
-    }
-    if (minutes > 0) {
-      if (durationStr) durationStr += ' ';
-      durationStr += `${minutes} min`;
-    }
-    if (!durationStr) {
-      durationStr = '0 min';
+    let message = '';
+    if (type === 'eliminata') {
+      message = 'Sei sicuro di voler eliminare questa prenotazione? (Annullamento entro 1 ora dalla creazione)';
+    } else {
+      message = 'Sei sicuro di voler cancellare questa prenotazione? (Annullamento con più di 2 ore di anticipo)';
     }
 
-    return { start, end, duration: durationStr };
+    Alert.alert(
+      'Conferma cancellazione',
+      message,
+      [
+        {
+          text: 'Annulla',
+          style: 'cancel'
+        },
+        {
+          text: 'Conferma',
+          onPress: async () => {
+            try {
+              const bookingRef = doc(db, 'bookings', prenotazione.id);
+              await updateDoc(bookingRef, {
+                status: type,
+                cancelledAt: new Date()
+              });
+              
+              Alert.alert('Successo', `Prenotazione ${type} con successo`);
+            } catch (error) {
+              console.error('Errore durante la cancellazione:', error);
+              Alert.alert('Errore', 'Impossibile cancellare la prenotazione');
+            }
+          }
+        }
+      ]
+    );
   };
 
   const renderPrenotazione = ({ item }) => {
-    const { start, end, duration } = calculateTimeRange(item.slots);
+    // Utilizza startTime e endTime direttamente dalla prenotazione
+    const start = item.startTime || 'N/A';
+    const end = item.endTime || 'N/A';
+    
+    // Calcola la durata in ore e minuti dal campo duration
+    let durationStr = '0 min';
+    if (item.duration) {
+      const hours = Math.floor(item.duration / 60);
+      const minutes = item.duration % 60;
+      durationStr = '';
+      if (hours > 0) {
+        durationStr += `${hours} ${hours === 1 ? 'ora' : 'ore'}`;
+      }
+      if (minutes > 0) {
+        if (durationStr) durationStr += ' ';
+        durationStr += `${minutes} min`;
+      }
+    }
+
+    const { canDelete } = canDeleteBooking(item);
+    const isCancelled = item.status !== 'confirmed';
 
     return (
-      <View style={styles.prenotazioneCard}>
+      <View style={[styles.prenotazioneCard, isCancelled && styles.prenotazioneCancellata]}>
         <View style={styles.prenotazioneHeader}>
           <Text style={styles.campoText}>{item.courtName}</Text>
-          <View style={[
-            styles.statoBadge,
-            item.status === 'confirmed' ? styles.statoConfermata : styles.statoCancellata
-          ]}>
-            <Text style={styles.statoTesto}>
-              {item.status === 'confirmed' ? 'Confermata' : 'Cancellata'}
-            </Text>
+          <View style={styles.headerActions}>
+            <View style={[
+              styles.statoBadge,
+              item.status === 'confirmed' ? styles.statoConfermata : 
+              item.status === 'cancellata' ? styles.statoCancellata : styles.statoEliminata
+            ]}>
+              <Text style={[
+                styles.statoTesto,
+                item.status === 'confirmed' ? styles.statoTestoConfermata : 
+                item.status === 'cancellata' ? styles.statoTestoCancellata : styles.statoTestoEliminata
+              ]}>
+                {item.status === 'confirmed' ? 'Confermata' : 
+                 item.status === 'cancellata' ? 'Cancellata' : 'Eliminata'}
+              </Text>
+            </View>
+            {canDelete && !isCancelled && (
+              <TouchableOpacity 
+                onPress={() => handleDeleteBooking(item)}
+                style={styles.deleteButton}
+              >
+                <Ionicons name="trash-outline" size={20} color="#e74c3c" />
+              </TouchableOpacity>
+            )}
           </View>
         </View>
         
@@ -194,7 +240,7 @@ const PrenotazioniScreen = () => {
         <View style={styles.orarioContainer}>
           <Ionicons name="time-outline" size={18} color="#3498db" />
           <Text style={styles.orarioText}>
-            {start} - {end} <Text style={styles.durataText}>({duration})</Text>
+            {start} - {end} <Text style={styles.durataText}>({durationStr})</Text>
           </Text>
         </View>
         
@@ -204,6 +250,15 @@ const PrenotazioniScreen = () => {
           <Ionicons name="calendar-outline" size={16} color="#7f8c8d" />
           <Text style={styles.infoText}>Prenotata il {formatDateTime(item.createdAt)}</Text>
         </View>
+
+        {item.cancelledAt && (
+          <View style={styles.infoContainer}>
+            <Ionicons name="close-circle-outline" size={16} color="#e74c3c" />
+            <Text style={styles.infoTextCancellata}>
+              {item.status === 'cancellata' ? 'Cancellata' : 'Eliminata'} il {formatDateTime(item.cancelledAt)}
+            </Text>
+          </View>
+        )}
       </View>
     );
   };
@@ -223,7 +278,7 @@ const PrenotazioniScreen = () => {
         <Ionicons name="alert-circle-outline" size={64} color="#e74c3c" />
         <Text style={styles.erroreTesto}>Errore nel caricamento</Text>
         <Text style={styles.erroreSottoTesto}>Riprova più tardi</Text>
-        <TouchableOpacity style={styles.riprovaButton} onPress={() => window.location.reload()}>
+        <TouchableOpacity style={styles.riprovaButton} onPress={() => onRefresh()}>
           <Text style={styles.riprovaTesto}>Riprova</Text>
         </TouchableOpacity>
       </View>
@@ -243,12 +298,23 @@ const PrenotazioniScreen = () => {
   return (
     <View style={styles.container}>
       <Text style={styles.titolo}>Le tue prenotazioni</Text>
+      <Text style={styles.sottoTitolo}>
+        • Puoi eliminare entro 1 ora dalla creazione
+        {"\n"}
+        • Puoi cancellare con più di 2 ore di anticipo
+      </Text>
       <FlatList
         data={prenotazioni}
         renderItem={renderPrenotazione}
         keyExtractor={item => item.id}
         contentContainerStyle={styles.listaContainer}
         showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={onRefresh}
+          />
+        }
       />
     </View>
   );
@@ -323,8 +389,15 @@ const styles = StyleSheet.create({
     fontSize: 28,
     fontWeight: '700',
     color: '#2c3e50',
-    marginBottom: 24,
+    marginBottom: 8,
     textAlign: 'center',
+  },
+  sottoTitolo: {
+    fontSize: 12,
+    color: '#6c757d',
+    marginBottom: 16,
+    textAlign: 'center',
+    lineHeight: 18,
   },
   listaContainer: {
     paddingBottom: 20,
@@ -333,7 +406,7 @@ const styles = StyleSheet.create({
     backgroundColor: 'white',
     borderRadius: 12,
     padding: 20,
-    marginBottom: 20,
+    marginBottom: 16,
     shadowColor: '#000',
     shadowOffset: {
       width: 0,
@@ -343,32 +416,57 @@ const styles = StyleSheet.create({
     shadowRadius: 3.84,
     elevation: 5,
   },
+  prenotazioneCancellata: {
+    opacity: 0.7,
+    backgroundColor: '#f8f9fa',
+  },
   prenotazioneHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    alignItems: 'center',
+    alignItems: 'flex-start',
     marginBottom: 12,
+  },
+  headerActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
   },
   campoText: {
     fontSize: 20,
     fontWeight: '700',
     color: '#2c3e50',
+    flex: 1,
+    marginRight: 10,
   },
   statoBadge: {
     paddingHorizontal: 12,
     paddingVertical: 6,
     borderRadius: 20,
+    marginRight: 10,
   },
   statoConfermata: {
     backgroundColor: '#d4edda',
   },
   statoCancellata: {
+    backgroundColor: '#fff3cd',
+  },
+  statoEliminata: {
     backgroundColor: '#f8d7da',
   },
   statoTesto: {
-    fontSize: 14,
+    fontSize: 12,
     fontWeight: '600',
+  },
+  statoTestoConfermata: {
     color: '#155724',
+  },
+  statoTestoCancellata: {
+    color: '#856404',
+  },
+  statoTestoEliminata: {
+    color: '#721c24',
+  },
+  deleteButton: {
+    padding: 4,
   },
   dataText: {
     fontSize: 18,
@@ -399,11 +497,18 @@ const styles = StyleSheet.create({
   infoContainer: {
     flexDirection: 'row',
     alignItems: 'center',
+    marginBottom: 4,
   },
   infoText: {
     fontSize: 14,
     color: '#7f8c8d',
     marginLeft: 8,
+  },
+  infoTextCancellata: {
+    fontSize: 14,
+    color: '#e74c3c',
+    marginLeft: 8,
+    fontStyle: 'italic',
   },
 });
 
