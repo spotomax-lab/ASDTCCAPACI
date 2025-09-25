@@ -1,13 +1,15 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { 
   StyleSheet, View, Text, TouchableOpacity, ScrollView, 
-  Alert, ActivityIndicator, Image, Modal, Platform 
+  Alert, ActivityIndicator, Image, Modal, Platform, FlatList,
+  Dimensions
 } from 'react-native';
-import { DateTimePickerAndroid } from '@react-native-community/datetimepicker';
+import DateTimePicker from '@react-native-community/datetimepicker';
 import { Ionicons } from '@expo/vector-icons';
 import { 
   collection, getDocs, addDoc, query, where, 
-  onSnapshot, doc, getDoc, updateDoc
+  onSnapshot, doc, getDoc, updateDoc, deleteDoc,
+  Timestamp, arrayUnion, increment, setDoc, arrayRemove
 } from 'firebase/firestore';
 import { 
   db, 
@@ -25,6 +27,112 @@ import {
   getStartOfWeek
 } from '../utils/dateTimeHelpers';
 
+const { height: SCREEN_HEIGHT } = Dimensions.get('window');
+
+// Funzione per ottenere la chiave della settimana (anno + numero settimana)
+const getWeekKey = (date: Date) => {
+  const startOfWeek = new Date(date);
+  startOfWeek.setHours(0, 0, 0, 0);
+  startOfWeek.setDate(date.getDate() - date.getDay());
+  const year = startOfWeek.getFullYear();
+  const weekNumber = Math.ceil((((startOfWeek - new Date(year, 0, 1)) / 86400000) + 1) / 7);
+  return `${year}-${weekNumber}`;
+};
+
+// FUNZIONE AGGIUNTA: Verifica e aggiorna lo stato della prenotazione
+const checkAndUpdateBookingStatus = async (bookingId: string) => {
+  try {
+    const bookingRef = doc(db, 'bookings', bookingId);
+    const bookingSnap = await getDoc(bookingRef);
+    
+    if (!bookingSnap.exists()) return;
+    
+    const bookingData = bookingSnap.data();
+    
+    // Per prenotazioni open: aggiorna lo stato basato sul numero di giocatori
+    if (bookingData.type === 'open') {
+      const currentPlayers = bookingData.players ? bookingData.players.filter(player => player.status === 'confirmed').length : 0;
+      const maxPlayers = bookingData.maxPlayers || (bookingData.matchType === 'singles' ? 2 : 4);
+      
+      let newStatus = bookingData.status;
+      
+      if (currentPlayers >= maxPlayers && bookingData.status !== 'confirmed') {
+        newStatus = 'confirmed';
+      } else if (currentPlayers < maxPlayers && bookingData.status === 'confirmed') {
+        newStatus = 'waiting';
+      }
+      
+      if (newStatus !== bookingData.status) {
+        await updateDoc(bookingRef, {
+          status: newStatus
+        });
+      }
+    }
+  } catch (error) {
+    console.error('Errore nell\'aggiornamento dello stato della prenotazione:', error);
+  }
+};
+
+// Funzione per creare notifiche
+const createNotification = async (userId: string, message: string, type: string, bookingData: any) => {
+  try {
+    await addDoc(collection(db, 'notifications'), {
+      userId: userId,
+      message: message,
+      type: type,
+      bookingId: bookingData.id,
+      createdAt: new Date(),
+      read: false
+    });
+  } catch (error) {
+    console.error('Errore nella creazione della notifica:', error);
+  }
+};
+
+// Funzione per aggiornare il conteggio delle prenotazioni
+const updateUserBookingCount = async (userId: string, operation: 'increment' | 'decrement' = 'increment') => {
+  try {
+    const weekKey = getWeekKey(new Date());
+    const userWeekRef = doc(db, 'userWeeklyBookings', `${userId}_${weekKey}`);
+    
+    if (operation === 'increment') {
+      await setDoc(userWeekRef, {
+        count: increment(1),
+        userId: userId,
+        week: weekKey,
+        updatedAt: Timestamp.now()
+      }, { merge: true });
+    } else {
+      const docSnap = await getDoc(userWeekRef);
+      if (docSnap.exists() && docSnap.data().count > 0) {
+        await updateDoc(userWeekRef, {
+          count: increment(-1),
+          updatedAt: Timestamp.now()
+        });
+      }
+    }
+  } catch (error) {
+    console.error('Errore nell\'aggiornamento del conteggio:', error);
+  }
+};
+
+// Funzione per ottenere il conteggio delle prenotazioni
+const getUserBookingCount = async (userId: string) => {
+  try {
+    const weekKey = getWeekKey(new Date());
+    const userWeekRef = doc(db, 'userWeeklyBookings', `${userId}_${weekKey}`);
+    const docSnap = await getDoc(userWeekRef);
+    
+    if (docSnap.exists()) {
+      return docSnap.data().count || 0;
+    }
+    return 0;
+  } catch (error) {
+    console.error('Errore nel recupero del conteggio:', error);
+    return 0;
+  }
+};
+
 const BookingScreen = () => {
   const [selectedField, setSelectedField] = useState('');
   const [selectedDate, setSelectedDate] = useState(() => {
@@ -40,33 +148,146 @@ const BookingScreen = () => {
   const [selectedSlot, setSelectedSlot] = useState(null);
   const [showConfirmation, setShowConfirmation] = useState(false);
   const [showDatePicker, setShowDatePicker] = useState(false);
-  // Vecchi stati per limiti - mantenuti per eventuali future modifiche
-  const [userSinglesBookingsThisWeek, setUserSinglesBookingsThisWeek] = useState(0);
-  const [userDoublesBookingsThisWeek, setUserDoublesBookingsThisWeek] = useState(0);
-  // Nuovo stato per limite totale
+  const [showAndroidDatePicker, setShowAndroidDatePicker] = useState(false);
   const [userTotalBookingsThisWeek, setUserTotalBookingsThisWeek] = useState(0);
   const [matchType, setMatchType] = useState<'singles' | 'doubles'>('singles');
   const [bookingMode, setBookingMode] = useState<'standard' | 'open'>('standard');
   const [availablePlayers, setAvailablePlayers] = useState([]);
   const [selectedPlayers, setSelectedPlayers] = useState([]);
+  const [updatingCount, setUpdatingCount] = useState(false);
+  const [showPlayerModal, setShowPlayerModal] = useState(false);
+  const [isSelectingPlayers, setIsSelectingPlayers] = useState(false);
+  const [showLegendModal, setShowLegendModal] = useState(false);
 
   const { user, userData } = useAuth();
   const isAdmin = userData?.role === 'admin';
 
+  // Funzione per renderizzare le icone dei giocatori (PULITA)
+  const renderPlayerIcons = (booking) => {
+    if (!booking) return null;
+    
+    const maxPlayers = booking.maxPlayers || (booking.matchType === 'singles' ? 2 : 4);
+
+    if (booking.type === 'normal' || booking.type === 'standard') {
+      // Per prenotazioni standard: tutti i giocatori sono confermati (solo icone blu)
+      return Array(maxPlayers).fill(0).map((_, index) => (
+        <Ionicons key={index} name="person" size={16} color="#3b82f6" style={styles.playerIcon} />
+      ));
+    } else if (booking.type === 'open') {
+      // Per prenotazioni open: giocatori confermati (blu) + posti disponibili (rossi)
+      const currentPlayers = booking.players ? booking.players.filter(player => player.status === 'confirmed').length : 0;
+      const icons = [];
+      
+      // Giocatori confermati (blu)
+      for (let i = 0; i < currentPlayers; i++) {
+        icons.push(
+          <Ionicons key={`blue-${i}`} name="person" size={16} color="#3b82f6" style={styles.playerIcon} />
+        );
+      }
+      
+      // Posti disponibili (rossi)
+      for (let i = 0; i < maxPlayers - currentPlayers; i++) {
+        icons.push(
+          <Ionicons key={`red-${i}`} name="person" size={16} color="#ef4444" style={styles.playerIcon} />
+        );
+      }
+      
+      return icons;
+    }
+    return null;
+  };
+
+  // Aggiungi questa funzione per verificare se la data è nei prossimi 3 giorni
   const isWithinNext3Days = (date: Date) => {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
-    const threeDaysLater = new Date(today);
+    const threeDaysLater = new Date();
     threeDaysLater.setDate(today.getDate() + 3);
+    threeDaysLater.setHours(23, 59, 59, 999);
     
     return date >= today && date <= threeDaysLater;
   };
 
-  const handleSlotSelect = (slot) => {
-    if (selectedSlot && selectedSlot.start === slot.start && selectedSlot.end === slot.end) {
-      setSelectedSlot(null);
-    } else {
-      setSelectedSlot(slot);
+  // AGGIUNTA: Funzione per verificare se uno slot è nel passato
+  const isSlotPassato = (slot) => {
+    try {
+      const now = new Date();
+      const dataSlot = new Date(selectedDate);
+      const [ore, minuti] = slot.start.split(':').map(Number);
+      dataSlot.setHours(ore, minuti, 0, 0);
+      
+      return dataSlot < now;
+    } catch (error) {
+      console.error('Errore nel controllo data/ora slot:', error);
+      return false;
+    }
+  };
+
+  // NUOVA FUNZIONE: Ottiene le note dalla configurazione slot
+  const getSlotNotes = (slot) => {
+    if (!selectedField) return null;
+    
+    try {
+      const dayOfWeek = getDayOfWeek(selectedDate);
+      const courtId = selectedField.replace('Campo ', '');
+      const key = `${courtId}_${dayOfWeek}`;
+      const dayConfigs = slotConfigurations[key] || [];
+      
+      const dateString = formatDateForStorage(selectedDate);
+      const slotStartTime = new Date(`${dateString}T${slot.start}:00`);
+      const slotEndTime = new Date(`${dateString}T${slot.end}:00`);
+      
+      const config = dayConfigs.find(cfg => {
+        if (!cfg || cfg.isActive === false) return false;
+        const cfgStart = new Date(`${dateString}T${cfg.startTime}:00`);
+        const cfgEnd = new Date(`${dateString}T${cfg.endTime}:00`);
+        return slotStartTime < cfgEnd && slotEndTime > cfgStart && cfg.activityType && cfg.activityType !== 'regular';
+      });
+      
+      return config ? config.notes || null : null;
+    } catch (error) {
+      console.error('Errore nel recupero delle note:', error);
+      return null;
+    }
+  };
+
+  // NUOVA FUNZIONE: Ottiene il tipo di blocco dalla configurazione slot
+  const getSlotBlockTypeFromConfig = (slot) => {
+    if (!selectedField) return null;
+    
+    try {
+      const dayOfWeek = getDayOfWeek(selectedDate);
+      const courtId = selectedField.replace('Campo ', '');
+      const key = `${courtId}_${dayOfWeek}`;
+      const dayConfigs = slotConfigurations[key] || [];
+      
+      const dateString = formatDateForStorage(selectedDate);
+      const slotStartTime = new Date(`${dateString}T${slot.start}:00`);
+      
+      const config = dayConfigs.find(cfg => {
+        if (!cfg || cfg.isActive === false) return false;
+        const cfgStart = new Date(`${dateString}T${cfg.startTime}:00`);
+        const cfgEnd = new Date(`${dateString}T${cfg.endTime}:00`);
+        return slotStartTime >= cfgStart && slotStartTime < cfgEnd && cfg.activityType && cfg.activityType !== 'regular';
+      });
+      
+      return config ? config.activityType || null : null;
+    } catch (error) {
+      console.error('Errore nel recupero del tipo di blocco:', error);
+      return null;
+    }
+  };
+
+  // NUOVA FUNZIONE: Descrizione tipo blocco (identica a CalendarManagement)
+  const getBlockTypeDescription = (blockType) => {
+    switch (blockType) {
+      case 'school': return 'Scuola Tennis';
+      case 'individual': return 'Lezione Individuale';
+      case 'blocked': return 'Bloccato';
+      case 'booked': return 'Prenotato';
+      case 'pending': return 'In attesa di conferma';
+      case 'open': return 'Prenotazione Open';
+      default: return blockType;
     }
   };
 
@@ -74,10 +295,68 @@ const BookingScreen = () => {
     fetchCourts();
     const unsubscribe = fetchSlotConfigurations();
     fetchAvailablePlayers();
+    
+    const cleanOldManualBlocks = async () => {
+      try {
+        const oneWeekAgo = new Date();
+        oneWeekAgo.setDate(oneWeekAgo.getDate() - 7);
+        
+        const oldBlocksQuery = query(
+          collection(db, BLOCKED_SLOTS),
+          where('createdAt', '<', Timestamp.fromDate(oneWeekAgo)),
+          where('isRecurring', '==', false)
+        );
+        
+        const querySnapshot = await getDocs(oldBlocksQuery);
+        querySnapshot.forEach(async (doc) => {
+          await deleteDoc(doc.ref);
+        });
+      } catch (error) {
+        console.error('Error cleaning old blocks:', error);
+      }
+    };
+    
+    cleanOldManualBlocks();
+    
     return () => {
       if (unsubscribe) unsubscribe();
     };
   }, []);
+
+  useEffect(() => {
+    if (!user || isAdmin) return;
+
+    const loadUserBookingCount = async () => {
+      try {
+        const count = await getUserBookingCount(user.uid);
+        setUserTotalBookingsThisWeek(count);
+      } catch (error) {
+        console.error('Error loading booking count:', error);
+        setUserTotalBookingsThisWeek(0);
+      }
+    };
+
+    loadUserBookingCount();
+
+    const weekKey = getWeekKey(new Date());
+    const userWeekRef = doc(db, 'userWeeklyBookings', `${user.uid}_${weekKey}`);
+    
+    const unsubscribe = onSnapshot(userWeekRef, 
+      (docSnap) => {
+        if (docSnap.exists()) {
+          setUserTotalBookingsThisWeek(docSnap.data().count || 0);
+        } else {
+          setUserTotalBookingsThisWeek(0);
+        }
+      },
+      (error) => {
+        console.error('Error in snapshot:', error);
+        setUserTotalBookingsThisWeek(0);
+      }
+    );
+
+    return () => unsubscribe();
+  }, [user, isAdmin]);
 
   useEffect(() => {
     if (selectedField && selectedDate) {
@@ -85,74 +364,6 @@ const BookingScreen = () => {
       fetchBlocks();
     }
   }, [selectedField, selectedDate]);
-
-  // Vecchio useEffect per limiti singoli/doppi - mantenuto per eventuali future modifiche
-  useEffect(() => {
-    if (!user || isAdmin) return;
-
-    const startOfWeek = getStartOfWeek(new Date());
-    startOfWeek.setHours(0, 0, 0, 0);
-    
-    const endOfWeek = new Date(startOfWeek);
-    endOfWeek.setDate(startOfWeek.getDate() + 6);
-    endOfWeek.setHours(23, 59, 59, 999);
-
-    const q = query(
-      collection(db, 'bookings'),
-      where('userId', '==', user.uid),
-      where('createdAt', '>=', startOfWeek),
-      where('createdAt', '<=', endOfWeek),
-      where('status', '==', 'confirmed')
-    );
-
-    const unsubscribe = onSnapshot(q, (querySnapshot) => {
-      let singlesCount = 0;
-      let doublesCount = 0;
-
-      querySnapshot.forEach((doc) => {
-        const booking = doc.data();
-        if (booking.matchType === 'singles') {
-          singlesCount++;
-        } else if (booking.matchType === 'doubles') {
-          doublesCount++;
-        }
-      });
-
-      setUserSinglesBookingsThisWeek(singlesCount);
-      setUserDoublesBookingsThisWeek(doublesCount);
-    });
-
-    return () => unsubscribe();
-  }, [user, isAdmin]);
-
-  // Nuovo useEffect per limite totale di 5 partite a settimana
-  useEffect(() => {
-    if (!user || isAdmin) return;
-
-    const startOfWeek = getStartOfWeek(new Date());
-    startOfWeek.setHours(0, 0, 0, 0);
-    
-    const endOfWeek = new Date(startOfWeek);
-    endOfWeek.setDate(startOfWeek.getDate() + 6);
-    endOfWeek.setHours(23, 59, 59, 999);
-
-    const q = query(
-      collection(db, 'bookings'),
-      where('players', 'array-contains', { 
-        userId: user.uid, 
-        status: 'confirmed' 
-      }),
-      where('createdAt', '>=', startOfWeek),
-      where('createdAt', '<=', endOfWeek),
-      where('status', 'in', ['confirmed', 'waiting'])
-    );
-
-    const unsubscribe = onSnapshot(q, (querySnapshot) => {
-      setUserTotalBookingsThisWeek(querySnapshot.size);
-    });
-
-    return () => unsubscribe();
-  }, [user, isAdmin]);
 
   const fetchCourts = async () => {
     try {
@@ -196,24 +407,22 @@ const BookingScreen = () => {
 
   const showDatePickerModal = () => {
     if (Platform.OS === 'android') {
-      DateTimePickerAndroid.open({
-        value: selectedDate,
-        onChange: handleDateChange,
-        mode: 'date',
-        minimumDate: new Date(),
-        positiveButtonLabel: 'Ok',
-        negativeButtonLabel: 'Annulla'
-      });
+      setShowAndroidDatePicker(true);
     } else {
       setShowDatePicker(true);
     }
   };
 
   const handleDateChange = (event, date) => {
+    if (Platform.OS === 'android') {
+      setShowAndroidDatePicker(false);
+    }
+    
     if (date) {
       setSelectedDate(date);
       setSelectedSlot(null);
     }
+    
     if (Platform.OS === 'ios') {
       setShowDatePicker(false);
     }
@@ -254,7 +463,7 @@ const BookingScreen = () => {
       collection(db, 'bookings'),
       where('courtName', '==', selectedField),
       where('date', '==', dateString),
-      where('status', 'in', ['confirmed', 'waiting'])
+      where('status', 'in', ['confirmed', 'waiting', 'pending'])
     );
 
     const unsubscribe = onSnapshot(q, (querySnapshot) => {
@@ -279,8 +488,8 @@ const BookingScreen = () => {
 
     const q = query(
       collection(db, BLOCKED_SLOTS),
-      where('start', '>=', startOfDay),
-      where('start', '<=', endOfDay)
+      where('start', '<=', endOfDay),
+      where('end', '>=', startOfDay)
     );
 
     const unsubscribe = onSnapshot(q, (querySnapshot) => {
@@ -395,7 +604,6 @@ const BookingScreen = () => {
   };
 
   const getSlotBlockType = (slot) => {
-    if (slot && slot.activityType && slot.activityType !== 'regular') return slot.activityType;
     if (!selectedField) return null;
     
     const dateString = formatDateForStorage(selectedDate);
@@ -420,7 +628,12 @@ const BookingScreen = () => {
       return slotStartTime < blockEnd && slotEndTime > blockStart;
     });
 
-    return blockedSlot ? blockedSlot.type || 'blocked' : null;
+    if (blockedSlot) {
+      return blockedSlot.type || 'blocked';
+    }
+
+    // Cerca anche nelle configurazioni slot
+    return getSlotBlockTypeFromConfig(slot);
   };
 
   const getBlockedReason = (slot) => {
@@ -478,26 +691,10 @@ const BookingScreen = () => {
     const dateString = formatDateForStorage(selectedDate);
     const slotStartTime = new Date(`${dateString}T${slot.start}:00`);
     const slotEndTime = new Date(`${dateString}T${slot.end}:00`);
-  {
-    const dayOfWeek = getDayOfWeek(selectedDate);
-    const courtId = selectedField.replace('Campo ', '');
-    const key = `${courtId}_${dayOfWeek}`;
-    const dayConfigs = slotConfigurations[key] || [];
-    const intersectsNonRegular = dayConfigs.some(cfg => {
-      if (!cfg || cfg.isActive === false) return false;
-      const type = cfg.activityType || 'regular';
-      if (type === 'regular') return false;
-      const cfgStart = new Date(`${dateString}T${cfg.startTime}:00`);
-      const cfgEnd = new Date(`${dateString}T${cfg.endTime}:00`);
-      return slotStartTime < cfgEnd && slotEndTime > cfgStart;
-    });
-    if (intersectsNonRegular) return false;
-  }
-
     
+    const courtId = selectedField.replace('Campo ', '');
+
     const isBlocked = blocks.some(block => {
-      const courtId = selectedField.replace('Campo ', '');
-      
       if (block.courtId !== courtId) return false;
       
       let blockStart, blockEnd;
@@ -515,18 +712,26 @@ const BookingScreen = () => {
 
     if (isBlocked) return false;
 
+    try {
+      const dayOfWeek = getDayOfWeek(selectedDate);
+      const key = `${courtId}_${dayOfWeek}`;
+      const dayConfigs = slotConfigurations[key] || [];
+      const intersectsNonRegular = dayConfigs.some(cfg => {
+        if (!cfg || cfg.isActive === false) return false;
+        const type = cfg.activityType || 'regular';
+        if (type === 'regular') return false;
+        const cfgStart = new Date(`${dateString}T${cfg.startTime}:00`);
+        const cfgEnd = new Date(`${dateString}T${cfg.endTime}:00`);
+        return slotStartTime < cfgEnd && slotEndTime > cfgStart;
+      });
+      if (intersectsNonRegular) return false;
+    } catch (e) {
+      console.warn('Errore nel controllo activityType:', e);
+    }
+
     const isBooked = isSlotBooked(slot);
 
     return !isBooked;
-  };
-
-  const getBlockTypeDescription = (blockType) => {
-    switch (blockType) {
-      case 'school': return 'Scuola Tennis';
-      case 'individual': return 'Lezione Individuale';
-      case 'blocked': return 'Bloccato (Manutenzione/Altro)';
-      default: return blockType;
-    }
   };
 
   const hasConsecutiveBooking = async (slot) => {
@@ -540,7 +745,7 @@ const BookingScreen = () => {
         status: 'confirmed' 
       }),
       where('date', '==', dateStr),
-      where('status', 'in', ['confirmed', 'waiting'])
+      where('status', 'in', ['confirmed', 'waiting', 'pending'])
     );
     
     const snapshot = await getDocs(q);
@@ -556,90 +761,216 @@ const BookingScreen = () => {
     });
   };
 
+  // FUNZIONE AGGIORNATA: Gestione del click sugli slot con visualizzazione identica a CalendarManagement
   const handleSlotPress = (slot) => {
     const blockType = getSlotBlockType(slot);
     const isBooked = isSlotBooked(slot);
     const booking = findBookingForSlot(slot);
+    const slotNotes = getSlotNotes(slot); // Recupera le note
+    const blockedReason = getBlockedReason(slot); // Motivo del blocco manuale
 
-    const typeLabelMap = {
-      school: 'Scuola Tennis',
-      individual: 'Lezione Individuale',
-      blocked: 'Bloccato (Manutenzione/Altro)',
-      regular: 'Campo libero',
-    };
-    
-    let label = isBooked ? 'Prenotato' : (blockType ? typeLabelMap[blockType] : 'Informazioni');
+    let title = 'Info Slot';
+    let message = '';
+    let buttons = [{ text: 'OK' }];
 
-    // Check if it's an open booking
-    if (isBooked && booking && booking.type === 'open') {
-      label = 'Prenotazione Open';
-    }
-
-    let note = slot.notes || null;
-    if (!note && blockType === 'blocked') {
-      note = getBlockedReason(slot);
-    }
-
-    let bookedBy = null;
-    let isOpenBooking = false;
-    let currentPlayers = 0;
-    let maxPlayers = 0;
-    let canJoin = false;
-    
+    // PRIMA: Gestisci slot prenotati (mostra info anche se passati)
     if (isBooked && booking) {
-      bookedBy = `${booking.userFirstName || ''} ${booking.userLastName || ''}`.trim() || 
-                booking.userName || 'Utente';
+      // Formatta la data in italiano
+      const dateFormatted = formatDate(selectedDate);
       
-      // Check if it's an open booking
+      // Determina il tipo di partita
+      const matchTypeText = booking.matchType === 'singles' ? 'Singolare' : 'Doppio';
+      const bookingTypeText = booking.type === 'open' ? 'Open' : 'Standard';
+      
+      // Conta i giocatori confermati
+      const confirmedPlayers = booking.players ? booking.players.filter(player => player.status === 'confirmed').length : 0;
+      const maxPlayers = booking.maxPlayers || (booking.matchType === 'singles' ? 2 : 4);
+      
+      // Controlla se l'utente è già nella prenotazione come giocatore confermato
+      const isUserInBooking = booking.players ? 
+        booking.players.some(player => player.userId === user?.uid && player.status === 'confirmed') : false;
+      
+      // Controlla se l'utente è invitato ma non ha ancora accettato
+      const isUserInvited = booking.invitedPlayers ? 
+        booking.invitedPlayers.some(player => player.userId === user?.uid && player.status === 'pending') : false;
+      
+      // Prepara l'elenco degli altri giocatori (escludendo il prenotatore)
+      const otherPlayers = booking.players ? 
+        booking.players
+          .filter(player => player.userId !== booking.userId && player.status === 'confirmed')
+          .map(player => player.userName) : [];
+      
+      // Costruisce il messaggio base
+      message += `Data: ${dateFormatted}\n`;
+      message += `Orario: ${slot.start} - ${slot.end}\n`;
+      message += `Campo: ${selectedField}\n`;
+      message += `Tipo: ${bookingTypeText} - ${matchTypeText}\n`;
+      
       if (booking.type === 'open') {
-        isOpenBooking = true;
-        currentPlayers = booking.players ? booking.players.length : 1;
-        maxPlayers = booking.maxPlayers || (booking.matchType === 'singles' ? 2 : 4);
+        // Messaggio per prenotazioni Open
+        const statusText = booking.status === 'waiting' ? 'In attesa di giocatori' : 'Confermato';
+        message += `Stato: ${statusText}\n`;
+        message += `Giocatori: ${confirmedPlayers}/${maxPlayers}\n`;
+        message += `Prenotato da: ${booking.userFirstName} ${booking.userLastName}\n`;
         
-        // Check if user can join
-        if (booking.userId !== user.uid && 
+        if (otherPlayers.length > 0) {
+          message += `Altri giocatori: ${otherPlayers.join(', ')}`;
+        } else {
+          message += `Altri giocatori: Nessun altro giocatore confermato`;
+        }
+
+        // Aggiungi il pulsante "Unisciti" solo se NON è passato e ci sono condizioni
+        const isPassato = isSlotPassato(slot);
+        if (!isPassato && !isUserInBooking && 
             booking.status === 'waiting' && 
-            currentPlayers < maxPlayers) {
-          canJoin = true;
+            confirmedPlayers < maxPlayers &&
+            !isUserInvited) {
+          buttons.unshift({
+            text: 'Unisciti alla prenotazione',
+            onPress: () => handleJoinBooking(booking)
+          });
+        }
+        
+        // Se l'utente è invitato ma non ha ancora accettato, mostra pulsante per accettare invito
+        if (!isPassato && isUserInvited) {
+          buttons.unshift({
+            text: 'Accetta invito',
+            onPress: () => handleAcceptInvitation(booking)
+          });
+        }
+      } else {
+        // Messaggio per prenotazioni Standard
+        const statusText = booking.status === 'confirmed' ? 'Confermato' : 'In attesa di conferma';
+        message += `Stato: ${statusText}\n`;
+        message += `Prenotato da: ${booking.userFirstName} ${booking.userLastName}\n`;
+        
+        if (otherPlayers.length > 0) {
+          message += `Altri giocatori: ${otherPlayers.join(', ')}`;
+        } else {
+          message += `Altri giocatori: Nessun altro giocatore confermato`;
         }
       }
+      
+      Alert.alert(title, message, buttons);
+      return;
+    } 
+    // SECONDO: Gestisci slot bloccati (mostra info IDENTICA a CalendarManagement)
+    else if (blockType) {
+      // Messaggio per slot bloccati - IDENTICO a CalendarManagement
+      title = `Info Slot - ${getBlockTypeDescription(blockType)}`;
+      message += `Orario: ${slot.display}\n`;
+      message += `Campo: ${selectedField}\n`;
+      
+      // Aggiungi il motivo se presente (per blocchi manuali)
+      if (blockedReason) {
+        message += `Motivo: ${blockedReason}\n`;
+      }
+      
+      // AGGIUNTA: Mostra le note se presenti (SENZA la scritta "Note:")
+      if (slotNotes) {
+        message += `${slotNotes}\n`;
+      }
+      
+      Alert.alert(title, message, buttons);
+      return;
     }
-
-    const lines = [];
-    if (note) lines.push(note);
-    lines.push(`${slot.start} - ${slot.end}`);
-    if (bookedBy) lines.push(`Prenotato da: ${bookedBy}`);
     
-    if (isOpenBooking) {
-      lines.push(`Tipo: Prenotazione Open (${booking.matchType === 'singles' ? 'Singolare' : 'Doppio'})`);
-      lines.push(`Giocatori: ${currentPlayers}/${maxPlayers}`);
-      lines.push(`Stato: ${booking.status === 'waiting' ? 'In attesa di giocatori' : 'Confermato'}`);
+    // TERZO: Solo per slot liberi controlla se è passato
+    if (isSlotPassato(slot)) {
+      Alert.alert(
+        'Slot non disponibile',
+        'Impossibile prenotare, orario di gioco già in corso o passato'
+      );
+      return;
     }
 
-    const buttons = [{ text: 'OK' }];
-    
-    // Add join button if it's an open booking and user can join
-    if (canJoin) {
-      buttons.unshift({
-        text: 'Unisciti alla prenotazione',
-        onPress: () => handleJoinBooking(booking)
-      });
+    // Quarto: Slot libero e non passato - toggle selezione
+    if (selectedSlot && selectedSlot.start === slot.start && selectedSlot.end === slot.end) {
+      setSelectedSlot(null);
+      setSelectedPlayers([]);
+      setIsSelectingPlayers(false);
+    } else {
+      setSelectedSlot(slot);
+      setSelectedPlayers([]);
+      setIsSelectingPlayers(false);
     }
-
-    Alert.alert(`Info Slot - ${label}`, lines.join('\n'), buttons);
   };
 
+  // NUOVA FUNZIONE: Gestisce l'accettazione di un invito
+  const handleAcceptInvitation = async (booking) => {
+    if (!user) return;
+    
+    setBookingLoading(true);
+    setUpdatingCount(true);
+    
+    try {
+      const bookingRef = doc(db, 'bookings', booking.id);
+      
+      // Rimuovi l'utente dagli invitedPlayers e aggiungilo ai players come confermato
+      const updatedInvitedPlayers = booking.invitedPlayers ? 
+        booking.invitedPlayers.filter(player => player.userId !== user.uid) : [];
+      
+      // CORREZIONE: usa userData invece di user.displayName
+      const newPlayer = {
+        userId: user.uid,
+        userName: userData ? `${userData.nome || ''} ${userData.cognome || ''}`.trim() || user.email : user.email,
+        status: 'confirmed'
+      };
+      
+      const updatedPlayers = [...(booking.players || []), newPlayer];
+      
+      await updateDoc(bookingRef, {
+        players: updatedPlayers,
+        invitedPlayers: updatedInvitedPlayers,
+        userIds: arrayUnion(user.uid)
+      });
+      
+      // Verifica e aggiorna lo stato della prenotazione
+      await checkAndUpdateBookingStatus(booking.id);
+      
+      // Aggiorna il conteggio delle prenotazioni per l'utente
+      await updateUserBookingCount(user.uid);
+      
+      Alert.alert('Successo', 'Hai accettato l\'invito con successo!');
+      setSelectedSlot(null);
+    } catch (error) {
+      console.error('Errore durante l\'accettazione dell\'invito:', error);
+      Alert.alert('Errore', 'Impossibile accettare l\'invito');
+    } finally {
+      setBookingLoading(false);
+      setUpdatingCount(false);
+    }
+  };
+
+  // FUNZIONE MIGLIORATA: Gestisce l'unione a una prenotazione open
   const handleJoinBooking = async (booking) => {
     if (!user) return;
     
-    // Check if user is already in the booking
-    if (booking.players.some(player => player.userId === user.uid)) {
+    // Controlla se lo slot è nel passato
+    if (isSlotPassato({ start: booking.startTime, end: booking.endTime })) {
+      Alert.alert('Partita passata', 'Non è possibile unirsi a una partita già iniziata o conclusa');
+      return;
+    }
+    
+    // Controlla solo se l'utente è già nei giocatori confermati
+    const isUserInBooking = booking.players ? 
+      booking.players.some(player => player.userId === user.uid && player.status === 'confirmed') : false;
+    
+    if (isUserInBooking) {
       Alert.alert('Errore', 'Sei già in questa prenotazione');
       return;
     }
     
-    // Check if booking is full
-    const currentPlayers = booking.players ? booking.players.length : 1;
+    // Controlla se l'utente è già stato invitato (ma non ha ancora accettato)
+    const isUserInvited = booking.invitedPlayers ? 
+      booking.invitedPlayers.some(player => player.userId === user.uid) : false;
+    
+    if (isUserInvited) {
+      Alert.alert('Invito già presente', 'Hai già un invito pendente per questa partita. Accettalo dalla lista delle partite open.');
+      return;
+    }
+    
+    const currentPlayers = booking.players ? booking.players.filter(player => player.status === 'confirmed').length : 0;
     const maxPlayers = booking.maxPlayers || (booking.matchType === 'singles' ? 2 : 4);
     
     if (currentPlayers >= maxPlayers) {
@@ -647,7 +978,6 @@ const BookingScreen = () => {
       return;
     }
     
-    // Check if user has reached weekly limit
     if (!isAdmin && userTotalBookingsThisWeek >= 5) {
       Alert.alert(
         'Limite prenotazioni raggiunto',
@@ -657,25 +987,30 @@ const BookingScreen = () => {
     }
     
     setBookingLoading(true);
+    setUpdatingCount(true);
     
     try {
       const bookingRef = doc(db, 'bookings', booking.id);
+      
+      // CORREZIONE: usa userData invece di user.displayName
       const newPlayer = {
         userId: user.uid,
-        userName: user.displayName || user.email,
+        userName: userData ? `${userData.nome || ''} ${userData.cognome || ''}`.trim() || user.email : user.email,
         status: 'confirmed'
       };
       
-      const updatedPlayers = [...booking.players, newPlayer];
-      const isNowFull = updatedPlayers.length >= maxPlayers;
+      const updatedPlayers = [...(booking.players || []), newPlayer];
       
       await updateDoc(bookingRef, {
         players: updatedPlayers,
-        status: isNowFull ? 'confirmed' : 'waiting'
+        userIds: arrayUnion(user.uid)
       });
       
-      // Aggiorna immediatamente il conteggio locale
-      setUserTotalBookingsThisWeek(prev => prev + 1);
+      // Verifica e aggiorna lo stato della prenotazione
+      await checkAndUpdateBookingStatus(booking.id);
+      
+      // Aggiorna il conteggio delle prenotazioni per l'utente
+      await updateUserBookingCount(user.uid);
       
       Alert.alert('Successo', 'Ti sei unito alla prenotazione con successo!');
       setSelectedSlot(null);
@@ -684,6 +1019,7 @@ const BookingScreen = () => {
       Alert.alert('Errore', 'Impossibile unirsi alla prenotazione');
     } finally {
       setBookingLoading(false);
+      setUpdatingCount(false);
     }
   };
 
@@ -694,11 +1030,21 @@ const BookingScreen = () => {
     const booking = findBookingForSlot(slot);
     const isOpenBooking = isBooked && booking && booking.type === 'open';
     
+    // Le prenotazioni open sono verdi solo se confermate, altrimenti gialle
+    const isOpenConfirmed = isOpenBooking && booking.status === 'confirmed';
+    const isOpenWaiting = isOpenBooking && booking.status === 'waiting';
+    
     if (isSelected) {
       return [styles.timeSlot, styles.timeSlotSelected];
     }
     
-    if (isOpenBooking) {
+    // PRIMA le prenotazioni open confermate (verdi)
+    if (isOpenConfirmed) {
+      return [styles.timeSlot, styles.timeSlotBooked];
+    }
+    
+    // POI le prenotazioni open in attesa (gialle)
+    if (isOpenWaiting) {
       return [styles.timeSlot, styles.timeSlotOpen];
     }
     
@@ -718,6 +1064,11 @@ const BookingScreen = () => {
       }
     }
     
+    // Slot libero: controlla se è passato per lo stile visivo
+    if (isSlotPassato(slot)) {
+      return [styles.timeSlot, styles.timeSlotPast];
+    }
+    
     return [styles.timeSlot, styles.timeSlotFree];
   };
 
@@ -731,66 +1082,125 @@ const BookingScreen = () => {
       } else {
         Alert.alert('Limite raggiunto', 
           matchType === 'singles' 
-            ? 'Puoi invitare massimo 1 giocatore per il singolare' 
-            : 'Puoi invitare massimo 3 giocatori per doppio'
+            ? 'Puoi selezionare massimo 1 giocatore per il singolare' 
+            : 'Puoi selezionare massimo 3 giocatori per doppio'
         );
       }
     }
   };
 
   const handleBooking = async () => {
-    if (!user || !selectedSlot) return;
-
-    const hasAdjacent = await hasConsecutiveBooking(selectedSlot);
-    if (hasAdjacent) {
-      Alert.alert('Regola prenotazioni', 'Non si possono prenotare 2 slot orari consecutivi.');
+    if (!user || !selectedSlot) {
+      Alert.alert('Errore', 'Utente non loggato o slot non selezionato');
       return;
     }
 
-    if (!isSlotAvailable(selectedSlot)) {
-      Alert.alert('Non prenotabile', 'Lo slot selezionato non è prenotabile.');
-      return;
-    }
-
-    // Controllo nuovo limite di 5 partite totali a settimana
-    if (!isAdmin && userTotalBookingsThisWeek >= 5) {
+    // Controlla se lo slot è nel passato
+    if (isSlotPassato(selectedSlot)) {
       Alert.alert(
-        'Limite prenotazioni raggiunto',
-        'Hai già effettuato 5 prenotazioni questa settimana. Non puoi effettuarne altre.'
+        'Impossibile prenotare',
+        'Orario di gioco già in corso o passato'
       );
       return;
     }
 
-    /* Vecchio controllo limiti - disattivato ma mantenuto per eventuali future modifiche
-    if (!isAdmin) {
-      if (matchType === 'singles' && userSinglesBookingsThisWeek >= 3) {
+    // Se stiamo ancora selezionando i giocatori, apri il modal
+    if (!isSelectingPlayers) {
+      setIsSelectingPlayers(true);
+      setShowPlayerModal(true);
+      return;
+    }
+
+    // Controllo obbligatorio per la selezione dei giocatori in modalità standard
+    if (bookingMode === 'standard') {
+      const requiredPlayers = matchType === 'singles' ? 1 : 3;
+      if (selectedPlayers.length !== requiredPlayers) {
         Alert.alert(
-          'Limite prenotazioni raggiunto',
-          'Hai già effettuato 3 prenotazioni singolari questa settimana. Non puoi effettuarne altre.'
-        );
-        return;
-      }
-      
-      if (matchType === 'doubles' && userDoublesBookingsThisWeek >= 1) {
-        Alert.alert(
-          'Limite prenotazioni raggiunto',
-          'Hai già effettuato 1 prenotazione doppia questa settimana. Non puoi effettuarne altre.'
+          'Selezione giocatori obbligatoria',
+          matchType === 'singles' 
+            ? 'Devi selezionare 1 avversario per il singolare' 
+            : 'Devi selezionare 3 giocatori per il doppio'
         );
         return;
       }
     }
-    */
+
+    try {
+      const hasAdjacent = await hasConsecutiveBooking(selectedSlot);
+      if (hasAdjacent) {
+        Alert.alert('Regola prenotazioni', 'Non si possono prenotare 2 slot orari consecutivi.');
+        return;
+      }
+
+      if (!isSlotAvailable(selectedSlot)) {
+        Alert.alert('Non prenotabile', 'Lo slot selezionato non è prenotabile.');
+        return;
+      }
+
+      if (!isAdmin && userTotalBookingsThisWeek >= 5) {
+        Alert.alert(
+          'Limite prenotazioni raggiunto',
+          'Hai già effettuato 5 prenotazioni questa settimana. Non puoi effettuarne altre.'
+        );
+        return;
+      }
+
+      // Controlla il limite per tutti i giocatori coinvolti
+      for (const playerId of [user.uid, ...selectedPlayers]) {
+        const playerBookingsCount = await getUserBookingCount(playerId);
+        if (playerBookingsCount >= 5) {
+          const player = playerId === user.uid 
+            ? { fullName: 'Tu' } 
+            : availablePlayers.find(p => p.id === playerId);
+          Alert.alert(
+            'Limite prenotazioni raggiunto',
+            `${player?.fullName} ha già raggiunto il limite di 5 prenotazioni questa settimana.`
+          );
+          return;
+        }
+      }
+    } catch (error) {
+      console.error('Errore nei controlli pre-prenotazione:', error);
+      Alert.alert('Errore', 'Si è verificato un errore durante i controlli di prenotazione');
+      return;
+    }
 
     setBookingLoading(true);
+    setUpdatingCount(true);
+    
     try {
       const court = courts.find(c => c.name === selectedField);
       const dateString = formatDateForStorage(selectedDate);
       const duration = timeStringToMinutes(selectedSlot.end) - timeStringToMinutes(selectedSlot.start);
       const maxPlayers = matchType === 'singles' ? 2 : 4;
 
+      // CORREZIONE: usa userData invece di user.displayName
+      const players = [
+        {
+          userId: user.uid,
+          userName: userData ? `${userData.nome || ''} ${userData.cognome || ''}`.trim() || user.email : user.email,
+          status: 'confirmed'
+        }
+      ];
+
+      // Gli invitati vanno solo in invitedPlayers, non in players
+      const invitedPlayers = bookingMode === 'open' ? 
+        selectedPlayers.map(playerId => {
+          const player = availablePlayers.find(p => p.id === playerId);
+          return {
+            userId: playerId,
+            userName: player?.fullName || playerId,
+            status: 'pending'
+          };
+        }) : [];
+
+      // Le prenotazioni open iniziano sempre come 'waiting'
+      let status = bookingMode === 'standard' ? 'confirmed' : 'waiting';
+
+      // CORREZIONE: usa userData invece di user.displayName
       const bookingData = {
         userId: user.uid,
-        userName: user.displayName || user.email,
+        userName: userData ? `${userData.nome || ''} ${userData.cognome || ''}`.trim() || user.email : user.email,
         userFirstName: userData?.nome || '',
         userLastName: userData?.cognome || '',
         courtId: court.id,
@@ -799,60 +1209,250 @@ const BookingScreen = () => {
         startTime: selectedSlot.start,
         endTime: selectedSlot.end,
         duration: duration,
-        status: bookingMode === 'open' ? 'waiting' : 'confirmed',
-        type: bookingMode === 'open' ? 'open' : 'normal',
+        status: status,
+        type: bookingMode === 'open' ? 'open' : 'standard',
         matchType: matchType,
-        players: [
-          {
-            userId: user.uid,
-            userName: user.displayName || user.email,
-            status: 'confirmed'
-          }
-        ],
+        players: players,
+        invitedPlayers: invitedPlayers,
         maxPlayers: maxPlayers,
-        createdAt: new Date()
+        createdAt: Timestamp.fromDate(new Date()),
+        userIds: [user.uid], // Solo il creatore inizialmente
       };
 
       if (bookingMode === 'open') {
         bookingData.joinable = true;
-        
-        if (selectedPlayers.length > 0) {
-          bookingData.invitedPlayers = selectedPlayers;
-          
-          for (const playerId of selectedPlayers) {
-            await addDoc(collection(db, 'notifications'), {
-              userId: playerId,
-              type: 'booking_invitation',
-              bookingData: bookingData,
-              message: `${user.displayName || user.email} ti ha invitato a partecipare a una partita di ${matchType === 'singles' ? 'singolare' : 'doppio'}`,
-              createdAt: new Date(),
-              read: false
-            });
-          }
-        }
       }
 
-      await addDoc(collection(db, 'bookings'), bookingData);
+      const docRef = await addDoc(collection(db, 'bookings'), bookingData);
+      const bookingWithId = { ...bookingData, id: docRef.id };
 
-      // Aggiorna immediatamente il conteggio locale
-      setUserTotalBookingsThisWeek(prev => prev + 1);
+      // Aggiorna il conteggio per TUTTI i giocatori nelle prenotazioni standard
+      if (bookingMode === 'standard') {
+        // Per standard, aggiungi tutti i giocatori selezionati come confermati
+        const standardPlayers = [
+          {
+            userId: user.uid,
+            // CORREZIONE: usa userData invece di user.displayName
+            userName: userData ? `${userData.nome || ''} ${userData.cognome || ''}`.trim() || user.email : user.email,
+            status: 'confirmed'
+          },
+          ...selectedPlayers.map(playerId => {
+            const player = availablePlayers.find(p => p.id === playerId);
+            return {
+              userId: playerId,
+              userName: player?.fullName || playerId,
+              status: 'confirmed'
+            };
+          })
+        ];
 
-      Alert.alert('Successo', 
-        bookingMode === 'open' 
-          ? `Prenotazione ${matchType === 'singles' ? 'singolare' : 'doppio'} open creata! ${selectedPlayers.length > 0 ? 'Gli invitati riceveranno una notifica.' : ''}`
-          : 'Prenotazione confermata!'
-      );
+        await updateDoc(docRef, {
+          players: standardPlayers,
+          userIds: [user.uid, ...selectedPlayers]
+        });
+
+        for (const playerId of [user.uid, ...selectedPlayers]) {
+          await updateUserBookingCount(playerId);
+        }
+        Alert.alert('Successo', 'Prenotazione confermata!');
+      } else {
+        // Per open, aggiorna solo il prenotante
+        await updateUserBookingCount(user.uid);
+        
+        // Crea notifiche per i giocatori invitati
+        for (const playerId of selectedPlayers) {
+          const player = availablePlayers.find(p => p.id === playerId);
+          // CORREZIONE: usa userData invece di user.displayName
+          const userDisplayName = userData ? `${userData.nome || ''} ${userData.cognome || ''}`.trim() || user.email : user.email;
+          const message = `${userDisplayName} ti ha invitato a una partita ${matchType === 'singles' ? 'singolare' : 'doppio'} open il ${formatDate(selectedDate)} dalle ${selectedSlot.start} alle ${selectedSlot.end}`;
+          
+          await createNotification(
+            playerId,
+            message,
+            'booking_invitation',
+            bookingWithId
+          );
+        }
+        
+        // Crea notifiche per tutti gli altri giocatori (solo per open)
+        // CORREZIONE: usa userData invece di user.displayName
+        const userDisplayName = userData ? `${userData.nome || ''} ${userData.cognome || ''}`.trim() || user.email : user.email;
+        const openMessage = `Nuova partita ${matchType === 'singles' ? 'singolare' : 'doppio'} open il ${formatDate(selectedDate)} dalle ${selectedSlot.start} alle ${selectedSlot.end}. Unisciti!`;
+        
+        for (const player of availablePlayers) {
+          if (player.id !== user.uid && !selectedPlayers.includes(player.id)) {
+            await createNotification(
+              player.id,
+              openMessage,
+              'open_match',
+              bookingWithId
+            );
+          }
+        }
+        
+        Alert.alert('Successo', 
+          `Prenotazione ${matchType === 'singles' ? 'singolare' : 'doppio'} open creata!${selectedPlayers.length > 0 ? ' Gli invitati hanno ricevuto una notifica.' : ''}`
+        );
+      }
       
       setSelectedSlot(null);
       setSelectedPlayers([]);
       setBookingMode('standard');
+      setShowPlayerModal(false);
+      setIsSelectingPlayers(false);
     } catch (error) {
       console.error('Errore durante la prenotazione:', error);
       Alert.alert('Errore', 'Impossibile completare la prenotazione');
     } finally {
       setBookingLoading(false);
+      setUpdatingCount(false);
     }
   };
+
+  const renderPlayerItem = ({ item }) => (
+    <TouchableOpacity
+      style={[
+        styles.playerItem,
+        selectedPlayers.includes(item.id) && styles.playerItemSelected
+      ]}
+      onPress={() => togglePlayerSelection(item.id)}
+    >
+      <Text style={[
+        styles.playerItemText,
+        selectedPlayers.includes(item.id) && styles.playerItemTextSelected
+      ]}>
+        {item.fullName}
+      </Text>
+      {selectedPlayers.includes(item.id) && (
+        <Ionicons name="checkmark" size={20} color="white" />
+      )}
+    </TouchableOpacity>
+  );
+
+  // Componente per la legenda nel modal
+  const LegendModal = () => (
+    <Modal
+      visible={showLegendModal}
+      animationType="slide"
+      transparent={true}
+      onRequestClose={() => setShowLegendModal(false)}
+    >
+      <View style={styles.legendModalContainer}>
+        <View style={styles.legendModalContent}>
+          {/* Header del modal */}
+          <View style={styles.legendHeader}>
+            <View style={styles.legendTitleContainer}>
+              <Ionicons name="information-circle" size={24} color="#3b82f6" />
+              <Text style={styles.legendTitle}>Legenda Prenotazioni</Text>
+            </View>
+            <TouchableOpacity 
+              onPress={() => setShowLegendModal(false)}
+              style={styles.legendCloseButton}
+            >
+              <Ionicons name="close" size={24} color="#64748b" />
+            </TouchableOpacity>
+          </View>
+
+          <ScrollView style={styles.legendScrollContent} showsVerticalScrollIndicator={false}>
+            {/* Sezione Stati Slot */}
+            <View style={styles.legendSection}>
+              <Text style={styles.legendSectionTitle}>Stati degli Slot</Text>
+              <View style={styles.legendGrid}>
+                <View style={styles.legendItem}>
+                  <View style={[styles.legendColorBox, styles.legendFree]} />
+                  <Text style={styles.legendText}>Libero</Text>
+                </View>
+                <View style={styles.legendItem}>
+                  <View style={[styles.legendColorBox, styles.legendPast]} />
+                  <Text style={styles.legendText}>Libero (Passato)</Text>
+                </View>
+                <View style={styles.legendItem}>
+                  <View style={[styles.legendColorBox, styles.legendBooked]} />
+                  <Text style={styles.legendText}>Prenotato/Open Confermato</Text>
+                </View>
+                <View style={styles.legendItem}>
+                  <View style={[styles.legendColorBox, styles.legendOpen]} />
+                  <Text style={styles.legendText}>Open in attesa</Text>
+                </View>
+                <View style={styles.legendItem}>
+                  <View style={[styles.legendColorBox, styles.legendSchool]} />
+                  <Text style={styles.legendText}>Scuola Tennis</Text>
+                </View>
+                <View style={styles.legendItem}>
+                  <View style={[styles.legendColorBox, styles.legendIndividual]} />
+                  <Text style={styles.legendText}>Lezione Individuale</Text>
+                </View>
+                <View style={styles.legendItem}>
+                  <View style={[styles.legendColorBox, styles.legendBlocked]} />
+                  <Text style={styles.legendText}>Bloccato</Text>
+                </View>
+                <View style={styles.legendItem}>
+                  <View style={[styles.legendColorBox, styles.legendSelected]} />
+                  <Text style={styles.legendText}>Selezionato</Text>
+                </View>
+              </View>
+            </View>
+
+            {/* Sezione Icone Giocatori */}
+            <View style={styles.legendSection}>
+              <Text style={styles.legendSectionTitle}>Icone Giocatori</Text>
+              <View style={styles.legendIconsContainer}>
+                <View style={styles.legendIconItem}>
+                  <Ionicons name="person" size={20} color="#3b82f6" />
+                  <Text style={styles.legendText}>Giocatore confermato</Text>
+                </View>
+                <View style={styles.legendIconItem}>
+                  <Ionicons name="person" size={20} color="#ef4444" />
+                  <Text style={styles.legendText}>Posto disponibile (Open)</Text>
+                </View>
+              </View>
+            </View>
+
+            {/* Sezione Istruzioni */}
+            <View style={styles.legendSection}>
+              <Text style={styles.legendSectionTitle}>Come Prenotare</Text>
+              <View style={styles.instructionsList}>
+                <View style={styles.instructionItem}>
+                  <Ionicons name="checkmark-circle" size={16} color="#22c55e" />
+                  <Text style={styles.instructionText}>Seleziona Singolare o Doppio</Text>
+                </View>
+                <View style={styles.instructionItem}>
+                  <Ionicons name="checkmark-circle" size={16} color="#22c55e" />
+                  <Text style={styles.instructionText}>Scehi tra Standard o Open</Text>
+                </View>
+                <View style={styles.instructionItem}>
+                  <Ionicons name="checkmark-circle" size={16} color="#22c55e" />
+                  <Text style={styles.instructionText}>Tocca brevemente per selezionare</Text>
+                </View>
+                <View style={styles.instructionItem}>
+                  <Ionicons name="checkmark-circle" size={16} color="#22c55e" />
+                  <Text style={styles.instructionText}>Tocca a lungo per i dettagli</Text>
+                </View>
+                <View style={styles.instructionItem}>
+                  <Ionicons name="close-circle" size={16} color="#ef4444" />
+                  <Text style={styles.instructionText}>Non si possono prenotare 2 slot consecutivi</Text>
+                </View>
+                <View style={styles.instructionItem}>
+                  <Ionicons name="alert-circle" size={16} color="#f59e0b" />
+                  <Text style={styles.instructionText}>Limite di 5 prenotazioni a settimana</Text>
+                </View>
+              </View>
+            </View>
+          </ScrollView>
+
+          {/* Footer del modal */}
+          <View style={styles.legendFooter}>
+            <TouchableOpacity 
+              style={styles.legendGotItButton}
+              onPress={() => setShowLegendModal(false)}
+            >
+              <Text style={styles.legendGotItButtonText}>Ho capito!</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </View>
+    </Modal>
+  );
 
   if (loading) {
     return (
@@ -919,7 +1519,10 @@ const BookingScreen = () => {
         </View>
 
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Data</Text>
+          <View style={styles.dateTitleContainer}>
+            <Text style={styles.sectionTitle}>Data</Text>
+            <Text style={styles.dateInstruction}> (Seleziona una data dal calendario)</Text>
+          </View>
           <View style={styles.dateRow}>
             <View style={styles.dateContainer}>
               <Text style={styles.dateText}>{formatDate(selectedDate)}</Text>
@@ -931,7 +1534,6 @@ const BookingScreen = () => {
               <Ionicons name="calendar" size={24} color="#3b82f6" />
             </TouchableOpacity>
           </View>
-          <Text style={styles.datePickerHint}>Seleziona una data dal calendario</Text>
         </View>
 
         <View style={styles.section}>
@@ -948,12 +1550,20 @@ const BookingScreen = () => {
                 setSelectedPlayers([]);
               }}
             >
-              <Text style={[
-                styles.matchTypeText,
-                matchType === 'singles' && styles.matchTypeTextSelected
-              ]}>
-                Singolare (2 giocatori)
-              </Text>
+              <View style={styles.matchTypeTextContainer}>
+                <Text style={[
+                  styles.matchTypeMainText,
+                  matchType === 'singles' && styles.matchTypeMainTextSelected
+                ]}>
+                  Singolare
+                </Text>
+                <Text style={[
+                  styles.matchTypeSubText,
+                  matchType === 'singles' && styles.matchTypeSubTextSelected
+                ]}>
+                  (2 giocatori)
+                </Text>
+              </View>
             </TouchableOpacity>
             
             <TouchableOpacity
@@ -966,28 +1576,22 @@ const BookingScreen = () => {
                 setSelectedPlayers([]);
               }}
             >
-              <Text style={[
-                styles.matchTypeText,
-                matchType === 'doubles' && styles.matchTypeTextSelected
-              ]}>
-                Doppio (4 giocatori)
-              </Text>
+              <View style={styles.matchTypeTextContainer}>
+                <Text style={[
+                  styles.matchTypeMainText,
+                  matchType === 'doubles' && styles.matchTypeMainTextSelected
+                ]}>
+                  Doppio
+                </Text>
+                <Text style={[
+                  styles.matchTypeSubText,
+                  matchType === 'doubles' && styles.matchTypeSubTextSelected
+                ]}>
+                  (4 giocatori)
+                </Text>
+              </View>
             </TouchableOpacity>
           </View>
-          
-          {/* Informazioni limite aggiornate */}
-          <Text style={styles.limitInfo}>
-            {`Hai ${userTotalBookingsThisWeek}/5 prenotazioni questa settimana`}
-          </Text>
-          
-          {/* Vecchie informazioni limite - mantenute ma nascoste 
-          <Text style={[styles.limitInfo, {display: 'none'}]}>
-            {matchType === 'singles' 
-              ? `Hai ${userSinglesBookingsThisWeek}/3 prenotazioni singolari questa settimana`
-              : `Hai ${userDoublesBookingsThisWeek}/1 prenotazione doppia questa settimana`
-            }
-          </Text>
-          */}
         </View>
 
         <View style={styles.section}>
@@ -1005,7 +1609,15 @@ const BookingScreen = () => {
                 styles.bookingModeText,
                 bookingMode === 'standard' && styles.bookingModeTextSelected
               ]}>
-                {matchType === 'singles' ? 'Gioco singolo' : 'Squadra completa'}
+                Prenotazione Chiusa
+              </Text>
+              <Text style={[
+                styles.bookingModeSubtext,
+                bookingMode === 'standard' && styles.bookingModeSubtextSelected
+              ]}>
+                {matchType === 'singles' 
+                  ? 'Seleziona obbligatoriamente 1 avversario' 
+                  : 'Seleziona obbligatoriamente 3 giocatori'}
               </Text>
             </TouchableOpacity>
             
@@ -1020,151 +1632,131 @@ const BookingScreen = () => {
                 styles.bookingModeText,
                 bookingMode === 'open' && styles.bookingModeTextSelected
               ]}>
-                {matchType === 'singles' ? 'Cerca avversario' : 'Cerca giocatori'}
+                Prenotazione Open
               </Text>
+              <Text style={[
+                styles.bookingModeSubtext,
+                bookingMode === 'open' && styles.bookingModeSubtextSelected
+              ]}>
+                {matchType === 'singles' 
+                  ? 'Invita opzionalmente 1 avversario' 
+                  : 'Invita opzionalmente fino a 3 giocatori'}
+              </Text>
+            </TouchableOpacity>
+          </View>
+
+          <Text style={styles.limitInfo}>
+            {updatingCount ? 'Aggiornamento...' : `Hai effettuato ${userTotalBookingsThisWeek}/5 prenotazioni questa settimana`}
+          </Text>
+        </View>
+
+        <View style={styles.separator} />
+
+        {/* Pulsante per aprire la legenda */}
+        <View style={styles.section}>
+          <View style={styles.legendButtonContainer}>
+            <TouchableOpacity 
+              style={styles.legendButton}
+              onPress={() => setShowLegendModal(true)}
+            >
+              <Ionicons name="information-circle-outline" size={20} color="#3b82f6" />
+              <Text style={styles.legendButtonText}>Guida alla Prenotazione</Text>
             </TouchableOpacity>
           </View>
         </View>
 
-        {bookingMode === 'open' && (
-          <View style={styles.section}>
-            <Text style={styles.sectionTitle}>
-              {matchType === 'singles' ? 'Invita Avversario' : 'Invita Giocatori'}
-            </Text>
-            <Text style={styles.inviteHint}>
-              {matchType === 'singles' 
-                ? 'Seleziona un avversario da invitare' 
-                : 'Seleziona i giocatori che vuoi invitare (max 3)'}
-            </Text>
-            
-            <ScrollView style={styles.playersContainer} horizontal={true}>
-              {availablePlayers.map((player) => (
-                <TouchableOpacity
-                  key={player.id}
-                  style={[
-                    styles.playerChip,
-                    selectedPlayers.includes(player.id) && styles.playerChipSelected
-                  ]}
-                  onPress={() => togglePlayerSelection(player.id)}
-                >
-                  <Text style={[
-                    styles.playerChipText,
-                    selectedPlayers.includes(player.id) && styles.playerChipTextSelected
-                  ]}>
-                    {player.fullName}
-                  </Text>
-                </TouchableOpacity>
-              ))}
-            </ScrollView>
-            
-            <Text style={styles.selectedPlayersInfo}>
-              {selectedPlayers.length} {matchType === 'singles' ? 'avversario' : 'giocatori'} selezionati
-            </Text>
-          </View>
-        )}
-
         <View style={styles.separator} />
 
         <View style={styles.section}>
-          <Text style={styles.instructionsTitle}>Come prenotare:</Text>
-          <View style={styles.instructionsContainer}>
-            <Text style={styles.instructionItem}>• Seleziona <Text style={styles.bold}>Singolare</Text> o <Text style={styles.bold}>Doppio</Text></Text>
-            <Text style={styles.instructionItem}>• Scegli tra <Text style={styles.bold}>Standard</Text> or <Text style={styles.bold}>Open</Text></Text>
-            <Text style={styles.instructionItem}>• <Text style={styles.bold}>Tocca brevemente</Text> per selezionare slot libero</Text>
-            <Text style={styles.instructionItem}>• <Text style={styles.bold}>Tocca a lungo</Text> per vedere i dettagli</Text>
-            <Text style={styles.instructionItem}>• <Text style={styles.bold}>Non si possono prenotare 2 slot consecutivi</Text></Text>
-            <Text style={styles.instructionItem}>• <Text style={styles.greenText}>Verde chiaro</Text> = Libero</Text>
-            <Text style={styles.instructionItem}>• <Text style={styles.bookedText}>Verde intenso</Text> = Prenotato</Text>
-            <Text style={styles.instructionItem}>• <Text style={styles.azureText}>Azzurro</Text> = Scuola Tennis</Text>
-            <Text style={styles.instructionItem}>• <Text style={styles.orangeText}>Arancione</Text> = Lezione individuale</Text>
-            <Text style={styles.instructionItem}>• <Text style={styles.redText}>Rosso</Text> = Bloccato</Text>
-            <Text style={styles.instructionItem}>• <Text style={styles.violetText}>Viola</Text> = Selezionato</Text>
-            <Text style={styles.instructionItem}>• <Text style={styles.yellowText}>Giallo</Text> = Prenotazione Open</Text>
+          <View style={styles.sectionHeader}>
+            <Text style={styles.sectionTitle}>Orario Giornaliero</Text>
           </View>
-        </View>
-
-        <View style={styles.separator} />
-
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Orari Disponibili</Text>
           
           {timeSlots.length > 0 ? (
             <>
               <View style={styles.timeGrid}>
                 {timeSlots.map((slot, index) => {
-  const blockType = getSlotBlockType(slot);
-  const isBooked = isSlotBooked(slot);
-  const isSelected = selectedSlot && selectedSlot.start === slot.start && selectedSlot.end === slot.end;
-  const booking = findBookingForSlot(slot);
-  const isOpenBooking = isBooked && booking && booking.type === 'open';
-  
-  const getSlotIcon = () => {
-    if (isOpenBooking) return '👥❓';
-    if (isBooked) return '👥';
-    if (blockType === 'school') return '🎾';
-    if (blockType === 'individual') return '👤';
-    if (blockType === 'blocked') return '🔧';
-    return '';
-  };
+                  const blockType = getSlotBlockType(slot);
+                  const isBooked = isSlotBooked(slot);
+                  const isSelected = selectedSlot && selectedSlot.start === slot.start && selectedSlot.end === slot.end;
+                  const booking = findBookingForSlot(slot);
+                  const isOpenBooking = isBooked && booking && booking.type === 'open';
+                  const isOpenConfirmed = isOpenBooking && booking.status === 'confirmed';
+                  const isOpenWaiting = isOpenBooking && booking.status === 'waiting';
+                  const isPassato = isSlotPassato(slot);
+                  
+                  const getSlotIcon = () => {
+                    if (isBooked) return '';
+                    if (blockType === 'school') return '🎾';
+                    if (blockType === 'individual') return '👤';
+                    if (blockType === 'blocked') return '🔧';
+                    return '';
+                  };
 
-  const icon = getSlotIcon();
-  
-  return (
-    <TouchableOpacity
-      key={index}
-      style={getSlotStyle(slot)}
-      onPress={() => { 
-        const t = getSlotBlockType(slot); 
-        const booked = isSlotBooked(slot); 
-        if (t || booked || slot.activityType) { 
-          handleSlotPress(slot); 
-        } else { 
-          handleSlotSelect(slot); 
-        } 
-      }}
-      onLongPress={() => handleSlotPress(slot)}
-    >
-      <View style={[
-  styles.slotContent,
-  !blockType && !isBooked && styles.slotContentFree
-]}>
-  <Text style={[
-    styles.slotText,
-    isSelected && styles.slotTextSelected
-  ]}>
-    {slot.display}
-  </Text>
-  {icon !== '' && (
-    <Text style={styles.slotIcon}>
-      {icon}
-    </Text>
-  )}
-</View>
-      </TouchableOpacity>
-  );
-})}
+                  const icon = getSlotIcon();
+                  
+                  return (
+                    <TouchableOpacity
+                      key={index}
+                      style={getSlotStyle(slot)}
+                      onPress={() => handleSlotPress(slot)}
+                      onLongPress={() => handleSlotPress(slot)}
+                    >
+                      <View style={[
+                        styles.slotContent,
+                        !blockType && !isBooked && styles.slotContentFree
+                      ]}>
+                        <Text style={[
+                          styles.slotText,
+                          isSelected && styles.slotTextSelected,
+                          (isBooked && !isOpenBooking) && styles.slotTextBooked,
+                          (blockType === 'school' || blockType === 'individual') && styles.slotTextBlocked,
+                          isOpenWaiting && styles.slotTextOpen,
+                          isOpenConfirmed && styles.slotTextBooked,
+                          isPassato && styles.slotTextPast
+                        ]}>
+                          {slot.display}
+                        </Text>
+                        
+                        {isBooked && booking ? (
+                          <View style={styles.playersIconsContainer}>
+                            {renderPlayerIcons(booking)}
+                          </View>
+                        ) : icon !== '' ? (
+                          <Text style={styles.slotIcon}>{icon}</Text>
+                        ) : (
+                          <View style={styles.emptyIconContainer} />
+                        )}
+                      </View>
+                    </TouchableOpacity>
+                  );
+                })}
               </View>
               
               <Text style={styles.finalInstruction}>
                 Seleziona gli orari cliccando sui riquadri sopra
               </Text>
 
-              <TouchableOpacity 
-                style={[styles.primaryButton, (!selectedSlot || bookingLoading) && styles.primaryButtonDisabled]} 
-                onPress={handleBooking}
-                disabled={!selectedSlot || bookingLoading}
-              >
-                {bookingLoading ? (
-                  <ActivityIndicator color="white" />
-                ) : (
-                  <Text style={styles.primaryButtonText}>
-                    {bookingMode === 'open' 
-                      ? `Crea prenotazione ${matchType === 'singles' ? 'singolare' : 'doppio'} open` 
-                      : 'Prenota'
-                    }
-                  </Text>
-                )}
-              </TouchableOpacity>
+              {selectedSlot && (
+                <TouchableOpacity 
+                  style={[styles.primaryButton, bookingLoading && styles.primaryButtonDisabled]} 
+                  onPress={handleBooking}
+                  disabled={bookingLoading}
+                >
+                  {bookingLoading ? (
+                    <ActivityIndicator color="white" />
+                  ) : (
+                    <Text style={styles.primaryButtonText}>
+                      {!isSelectingPlayers 
+                        ? (bookingMode === 'open' 
+                            ? `Crea prenotazione ${matchType === 'singles' ? 'singolare' : 'doppio'} open` 
+                            : 'Conferma prenotazione')
+                        : 'Conferma con giocatori selezionati'
+                      }
+                    </Text>
+                  )}
+                </TouchableOpacity>
+              )}
             </>
           ) : null}
         </View>
@@ -1197,6 +1789,112 @@ const BookingScreen = () => {
           </View>
         </Modal>
       )}
+
+      {showAndroidDatePicker && Platform.OS === 'android' && (
+        <DateTimePicker
+          value={selectedDate}
+          mode="date"
+          display="default"
+          onChange={handleDateChange}
+          minimumDate={new Date()}
+        />
+      )}
+
+      {/* Modal per la selezione dei giocatori */}
+      <Modal
+        visible={showPlayerModal}
+        animationType="slide"
+        transparent={true}
+        onRequestClose={() => {
+          setShowPlayerModal(false);
+          setIsSelectingPlayers(true);
+        }}
+      >
+        <View style={styles.playerModalContainer}>
+          <View style={styles.playerModalContent}>
+            <View style={styles.playerModalHeader}>
+              <Text style={styles.playerModalTitle}>
+                {bookingMode === 'standard' 
+                  ? (matchType === 'singles' ? 'Seleziona Avversario' : 'Seleziona Giocatori')
+                  : (matchType === 'singles' ? 'Invita Avversario' : 'Invita Giocatori')
+                }
+              </Text>
+              <TouchableOpacity 
+                onPress={() => {
+                  setShowPlayerModal(false);
+                  setIsSelectingPlayers(true);
+                }}
+                style={styles.closeButton}
+              >
+                <Ionicons name="close" size={24} color="#3b82f6" />
+              </TouchableOpacity>
+            </View>
+            
+            <Text style={styles.playerModalSubtitle}>
+              {bookingMode === 'standard' 
+                ? (matchType === 'singles' 
+                    ? 'Seleziona 1 avversario' 
+                    : 'Seleziona 3 giocatori')
+                : (matchType === 'singles' 
+                    ? 'Puoi selezionare fino a 1 avversario' 
+                    : 'Puoi selezionare fino a 3 giocatori')
+              }
+            </Text>
+            
+            {bookingMode === 'open' && (
+              <TouchableOpacity 
+                style={styles.selectAllButton}
+                onPress={() => {
+                  const maxPlayers = matchType === 'singles' ? 1 : 3;
+                  const allPlayerIds = availablePlayers.slice(0, maxPlayers).map(p => p.id);
+                  setSelectedPlayers(allPlayerIds);
+                }}
+              >
+                <Text style={styles.selectAllButtonText}>Seleziona tutti</Text>
+              </TouchableOpacity>
+            )}
+            
+            <FlatList
+              data={availablePlayers}
+              renderItem={renderPlayerItem}
+              keyExtractor={item => item.id}
+              style={styles.playerList}
+            />
+            
+            <View style={styles.playerModalFooter}>
+              <Text style={styles.selectedCount}>
+                {selectedPlayers.length} {matchType === 'singles' ? 'avversario' : 'giocatori'} selezionati
+                {bookingMode === 'standard' && 
+                  ` (${matchType === 'singles' ? '1 necessario' : '3 necessari'})`
+                }
+              </Text>
+              <View style={styles.playerModalButtonContainer}>
+                <TouchableOpacity 
+                  style={styles.okButton}
+                  onPress={() => {
+                    setShowPlayerModal(false);
+                    setIsSelectingPlayers(true);
+                    
+                    // Per prenotazioni standard, conferma automaticamente dopo la selezione
+                    if (bookingMode === 'standard') {
+                      // Verifica che il numero di giocatori sia corretto
+                      const requiredPlayers = matchType === 'singles' ? 1 : 3;
+                      if (selectedPlayers.length === requiredPlayers) {
+                        handleBooking(); // Chiama handleBooking per confermare
+                      }
+                    }
+                  }}
+                >
+                  <Text style={styles.okButtonText}>OK</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Modal per la legenda */}
+      <LegendModal />
     </View>
   );
 };
@@ -1216,11 +1914,26 @@ const styles = StyleSheet.create({
   section: {
     marginBottom: 16,
   },
+  sectionHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
   sectionTitle: {
     fontSize: 16,
     fontWeight: 'bold',
     color: '#1e293b',
     marginBottom: 10,
+  },
+  dateTitleContainer: {
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    marginBottom: 10,
+  },
+  dateInstruction: {
+    fontSize: 12,
+    fontStyle: 'italic',
+    color: '#64748b',
   },
   fieldsRow: {
     flexDirection: 'row',
@@ -1264,13 +1977,6 @@ const styles = StyleSheet.create({
     borderRadius: 6,
     borderWidth: 1,
     borderColor: '#3b82f6',
-  },
-  datePickerHint: {
-    fontSize: 12,
-    color: '#64748b',
-    textAlign: 'center',
-    marginTop: 8,
-    fontStyle: 'italic',
   },
   fieldCard: {
     width: '48%',
@@ -1333,11 +2039,23 @@ const styles = StyleSheet.create({
     backgroundColor: '#3b82f6',
     borderColor: '#2563eb',
   },
-  matchTypeText: {
+  matchTypeTextContainer: {
+    alignItems: 'center',
+  },
+  matchTypeMainText: {
     color: '#64748b',
     fontWeight: '600',
+    fontSize: 14,
   },
-  matchTypeTextSelected: {
+  matchTypeMainTextSelected: {
+    color: 'white',
+  },
+  matchTypeSubText: {
+    color: '#64748b',
+    fontSize: 11,
+    marginTop: 2,
+  },
+  matchTypeSubTextSelected: {
     color: 'white',
   },
   limitInfo: {
@@ -1374,91 +2092,40 @@ const styles = StyleSheet.create({
   bookingModeTextSelected: {
     color: 'white',
   },
-  playersContainer: {
-    flexDirection: 'row',
-    marginBottom: 10,
-    maxHeight: 50,
-  },
-  playerChip: {
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    backgroundColor: '#e5e7eb',
-    borderRadius: 20,
-    marginRight: 8,
-  },
-  playerChipSelected: {
-    backgroundColor: '#3b82f6',
-  },
-  playerChipText: {
-    color: '#4b5563',
-    fontSize: 12,
-  },
-  playerChipTextSelected: {
-    color: 'white',
-  },
-  inviteHint: {
-    fontSize: 12,
+  bookingModeSubtext: {
+    fontSize: 10,
     color: '#64748b',
-    marginBottom: 8,
+    textAlign: 'center',
+    marginTop: 4,
     fontStyle: 'italic',
   },
-  selectedPlayersInfo: {
-    fontSize: 12,
-    color: '#3b82f6',
-    textAlign: 'center',
+  bookingModeSubtextSelected: {
+    color: 'white',
   },
   separator: {
     height: 1,
     backgroundColor: '#e2e8f0',
     marginVertical: 16,
   },
-  instructionsTitle: {
-    fontSize: 14,
-    fontWeight: 'bold',
-    color: '#1e293b',
+  legendButtonContainer: {
+    alignItems: 'center',
     marginBottom: 10,
   },
-  instructionsContainer: {
+  legendButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
     backgroundColor: 'white',
-    padding: 10,
-    borderRadius: 6,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderRadius: 25,
+    borderWidth: 1,
+    borderColor: '#3b82f6',
+    gap: 8,
   },
-  instructionItem: {
-    fontSize: 11,
-    color: '#475569',
-    marginBottom: 5,
-    lineHeight: 14,
-  },
-  bold: {
+  legendButtonText: {
+    color: '#3b82f6',
     fontWeight: '600',
-  },
-  greenText: {
-    color: '#22c55e',
-    fontWeight: 'bold',
-  },
-  bookedText: {
-    color: '#10b981',
-    fontWeight: 'bold',
-  },
-  azureText: {
-    color: '#93c5fd',
-    fontWeight: 'bold',
-  },
-  orangeText: {
-    color: '#f59e0b',
-    fontWeight: 'bold',
-  },
-  redText: {
-    color: '#ef4444',
-    fontWeight: 'bold',
-  },
-  violetText: {
-    color: '#8b5cf6',
-    fontWeight: 'bold',
-  },
-  yellowText: {
-    color: '#f59e0b',
-    fontWeight: 'bold',
+    fontSize: 14,
   },
   timeGrid: {
     flexDirection: 'row',
@@ -1466,44 +2133,75 @@ const styles = StyleSheet.create({
     gap: 6,
     justifyContent: 'space-between',
   },
-slotContent: {
+  slotContent: {
     alignItems: 'center',
+    justifyContent: 'center',
+    height: '100%',
+    paddingTop: 2,
   },
-slotContentFree: {
-  alignItems: 'center',
-  justifyContent: 'flex-start',
-  height: '100%',
-  paddingTop: 14,
-},
+   slotContentFree: {
+    // Rimuoviamo qualsiasi stile speciale per gli slot liberi
+  },
   slotText: {
     fontSize: 13,
-    fontWeight: '600',
+    fontWeight: 'bold',
     textAlign: 'center',
     color: '#111827',
     includeFontPadding: false,
-},
-slotTextSelected: {
-  color: 'white',
-},
-slotIcon: {
-  fontSize: 16,
-  marginTop: 0,
-},
+    marginBottom: 4,
+  },
+  slotTextSelected: {
+    color: 'white',
+  },
+  slotTextBooked: {
+    color: 'black',
+  },
+  slotTextBlocked: {
+    color: '#111827',
+  },
+  slotTextOpen: {
+    color: '#111827',
+  },
+  slotTextPast: {
+    color: '#6b7280',
+  },
+  slotIcon: {
+    fontSize: 16,
+    marginTop: 0,
+  },
+  emptyIconContainer: {
+    height: 20,
+    width: '100%',
+  },
+  playersIconsContainer: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'center',
+    marginTop: 2,
+  },
+  playerIcon: {
+    marginHorizontal: 1,
+    fontSize: 16,
+  },
   timeSlot: {
-  justifyContent: 'center',
-  height: 68,
-  width: '31%',
-  padding: 0,
-  borderWidth: 1,
-  borderRadius: 16,
-  alignItems: 'center',
-  marginBottom: 12,
-  minHeight: 50,
-  position: 'relative',
-},
+    justifyContent: 'center',
+    height: 68,
+    width: '31%',
+    padding: 0,
+    borderWidth: 1,
+    borderRadius: 16,
+    alignItems: 'center',
+    marginBottom: 12,
+    minHeight: 50,
+    position: 'relative',
+  },
   timeSlotFree: {
     backgroundColor: '#dcfce7',
-    borderColor: '#bbf7d0',
+    borderColor: '#83d6a0',
+  },
+  timeSlotPast: {
+    backgroundColor: '#d1d5db',
+    borderColor: '#9ca3af',
   },
   timeSlotSelected: {
     backgroundColor: '#8b5cf6',
@@ -1515,7 +2213,7 @@ slotIcon: {
   },
   timeSlotOpen: {
     backgroundColor: '#fef08a',
-    borderColor: '#f59e0b',
+    borderColor: '#dac945',
   },
   timeSlotSchool: {
     backgroundColor: '#93c5fd',
@@ -1523,7 +2221,7 @@ slotIcon: {
   },
   timeSlotIndividual: {
     backgroundColor: '#f59e0b',
-    borderColor: '#d97706',
+    borderColor: '#ea580c',
   },
   timeSlotBlocked: {
     backgroundColor: '#ef4444',
@@ -1557,7 +2255,7 @@ slotIcon: {
     backgroundColor: '#3b82f6',
     borderRadius: 6,
     alignItems: 'center',
-    marginBottom: 20,
+    marginBottom: 12,
   },
   primaryButtonDisabled: {
     backgroundColor: '#93c5fd',
@@ -1603,6 +2301,237 @@ slotIcon: {
   modalButtonText: {
     color: 'white',
     fontWeight: 'bold',
+  },
+  // Stili per il modal dei giocatori
+  playerModalContainer: {
+    flex: 1,
+    justifyContent: 'flex-end',
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+  },
+  playerModalContent: {
+    backgroundColor: 'white',
+    borderTopLeftRadius: 16,
+    borderTopRightRadius: 16,
+    padding: 20,
+    maxHeight: '80%',
+  },
+  playerModalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 10,
+  },
+  playerModalTitle: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: '#1e293b',
+  },
+  closeButton: {
+    padding: 4,
+  },
+  playerModalSubtitle: {
+    fontSize: 14,
+    color: '#64748b',
+    marginBottom: 16,
+  },
+  selectAllButton: {
+    backgroundColor: '#3b82f6',
+    padding: 10,
+    borderRadius: 6,
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  selectAllButtonText: {
+    color: 'white',
+    fontWeight: 'bold',
+  },
+  playerList: {
+    maxHeight: '70%',
+    marginBottom: 16,
+  },
+  playerItem: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: 12,
+    backgroundColor: '#f8fafc',
+    borderRadius: 8,
+    marginBottom: 8,
+  },
+  playerItemSelected: {
+    backgroundColor: '#3b82f6',
+  },
+  playerItemText: {
+    fontSize: 16,
+    color: '#1e293b',
+  },
+  playerItemTextSelected: {
+    color: 'white',
+  },
+  playerModalFooter: {
+    alignItems: 'center',
+  },
+  selectedCount: {
+    fontSize: 14,
+    color: '#3b82f6',
+    fontWeight: '600',
+    marginBottom: 12,
+    textAlign: 'center',
+  },
+  playerModalButtonContainer: {
+    width: '100%',
+    alignItems: 'center',
+  },
+  okButton: {
+    backgroundColor: '#3b82f6',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderRadius: 6,
+    width: '100%',
+    alignItems: 'center',
+  },
+  okButtonText: {
+    color: 'white',
+    fontWeight: 'bold',
+  },
+  // Stili per il modal della legenda
+  legendModalContainer: {
+    flex: 1,
+    justifyContent: 'flex-end',
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+  },
+  legendModalContent: {
+    backgroundColor: 'white',
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    maxHeight: SCREEN_HEIGHT * 0.85,
+    paddingBottom: Platform.OS === 'ios' ? 34 : 20,
+  },
+  legendHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: 20,
+    borderBottomWidth: 1,
+    borderBottomColor: '#e2e8f0',
+  },
+  legendTitleContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  legendTitle: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: '#1e293b',
+  },
+  legendCloseButton: {
+    padding: 4,
+  },
+  legendScrollContent: {
+    padding: 20,
+  },
+  legendSection: {
+    marginBottom: 24,
+  },
+  legendSectionTitle: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#374151',
+    marginBottom: 12,
+  },
+  legendGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 12,
+  },
+  legendItem: {
+    width: '48%',
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 8,
+    gap: 8,
+  },
+  legendColorBox: {
+    width: 20,
+    height: 20,
+    borderRadius: 4,
+    borderWidth: 1,
+  },
+  legendFree: {
+    backgroundColor: '#dcfce7',
+    borderColor: '#bbf7d0',
+  },
+  legendPast: {
+    backgroundColor: '#d1d5db',
+    borderColor: '#9ca3af',
+  },
+  legendBooked: {
+    backgroundColor: '#10b981',
+    borderColor: '#059669',
+  },
+  legendOpen: {
+    backgroundColor: '#fef08a',
+    borderColor: '#dac945',
+  },
+  legendSchool: {
+    backgroundColor: '#93c5fd',
+    borderColor: '#3b82f6',
+  },
+  legendIndividual: {
+    backgroundColor: '#f59e0b',
+    borderColor: '#ea580c',
+  },
+  legendBlocked: {
+    backgroundColor: '#ef4444',
+    borderColor: '#dc2626',
+  },
+  legendSelected: {
+    backgroundColor: '#8b5cf6',
+    borderColor: '#7c3aed',
+  },
+  legendText: {
+    fontSize: 12,
+    color: '#374151',
+    flex: 1,
+  },
+  legendIconsContainer: {
+    gap: 12,
+  },
+  legendIconItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  instructionsList: {
+    gap: 10,
+  },
+  instructionItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  instructionText: {
+    fontSize: 14,
+    color: '#374151',
+    flex: 1,
+  },
+  legendFooter: {
+    paddingHorizontal: 20,
+    paddingTop: 16,
+    borderTopWidth: 1,
+    borderTopColor: '#e2e8f0',
+  },
+  legendGotItButton: {
+    backgroundColor: '#3b82f6',
+    paddingVertical: 14,
+    borderRadius: 12,
+    alignItems: 'center',
+  },
+  legendGotItButtonText: {
+    color: 'white',
+    fontSize: 16,
+    fontWeight: '600',
   },
 });
 

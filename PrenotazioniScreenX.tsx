@@ -27,7 +27,7 @@ const PrenotazioniScreen = () => {
       // Query principale con ordinamento per data crescente (dalla più vicina)
       const q = query(
         collection(db, 'bookings'),
-        where('userId', '==', user.uid),
+        where('userIds', 'array-contains', user.uid),
         orderBy('date', 'asc') // Ordine crescente: dalla più vicina
       );
 
@@ -205,23 +205,29 @@ const PrenotazioniScreen = () => {
     const { canDelete } = canDeleteBooking(item);
     const isCancelled = item.status !== 'confirmed';
 
+    // MODIFICA: Mostra sempre come confermata le prenotazioni standard
+    const isStandard = item.type === 'normal';
+const isOpen = item.type === 'open';
     return (
-      <View style={[styles.prenotazioneCard, isCancelled && styles.prenotazioneCancellata]}>
+      <View style={[styles.prenotazioneCard, (item.status !== 'confirmed') && styles.prenotazioneCancellata]}>
         <View style={styles.prenotazioneHeader}>
           <Text style={styles.campoText}>{item.courtName}</Text>
           <View style={styles.headerActions}>
             <View style={[
               styles.statoBadge,
-              item.status === 'confirmed' ? styles.statoConfermata : 
-              item.status === 'cancellata' ? styles.statoCancellata : styles.statoEliminata
+              isStandardConfirmed && styles.statoConfermata,
+              isOpenWaiting && styles.statoPending,
+              isOpenConfirmed && styles.statoConfermata
             ]}>
               <Text style={[
                 styles.statoTesto,
-                item.status === 'confirmed' ? styles.statoTestoConfermata : 
-                item.status === 'cancellata' ? styles.statoTestoCancellata : styles.statoTestoEliminata
+                isStandardConfirmed && styles.statoTestoConfermata,
+                isOpenWaiting && styles.statoTestoPending,
+                isOpenConfirmed && styles.statoTestoConfermata
               ]}>
-                {item.status === 'confirmed' ? 'Confermata' : 
-                 item.status === 'cancellata' ? 'Cancellata' : 'Eliminata'}
+                {isStandardConfirmed ? 'Confermata' : 
+                 isOpenWaiting ? 'In attesa' : 
+                 isOpenConfirmed ? 'Confermata' : item.status}
               </Text>
             </View>
             {canDelete && !isCancelled && (
@@ -452,6 +458,12 @@ const styles = StyleSheet.create({
   statoEliminata: {
     backgroundColor: '#f8d7da',
   },
+  statoPending: {
+    backgroundColor: '#fff3cd',
+  },
+  statoWaiting: {
+    backgroundColor: '#d1ecf1',
+  },
   statoTesto: {
     fontSize: 12,
     fontWeight: '600',
@@ -464,6 +476,12 @@ const styles = StyleSheet.create({
   },
   statoTestoEliminata: {
     color: '#721c24',
+  },
+  statoTestoPending: {
+    color: '#856404',
+  },
+  statoTestoWaiting: {
+    color: '#0c5460',
   },
   deleteButton: {
     padding: 4,

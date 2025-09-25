@@ -1,43 +1,49 @@
 {
   "expo": {
-    "name": "AsdTcCapaci",
+    "name": "ASD TC Capaci",
     "slug": "AsdTcCapaci",
-    "version": "1.0.0",
+    "version": "1.0.1",
+    "runtimeVersion": "1.0.1",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
-    "newArchEnabled": true,
     "splash": {
       "image": "./assets/splash-icon.png",
       "resizeMode": "contain",
       "backgroundColor": "#ffffff"
     },
+    "assetBundlePatterns": [
+      "**/*"
+    ],
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.asdtccapaci.app"
     },
     "android": {
+      "package": "com.asdtccapaci.app",
+      "versionCode": 2,
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#ffffff"
       },
-      "edgeToEdgeEnabled": true,
-      "package": "com.silmarillon.AsdTcCapaci"
+      "permissions": []
     },
     "web": {
       "favicon": "./assets/favicon.png"
+    },
+    "scheme": "asd-tc-capaci",
+    "plugins": [
+      "expo-notifications"
+    ],
+    "updates": {
+      "enabled": true,
+      "checkAutomatically": "ON_LOAD",
+      "fallbackToCacheTimeout": 0
     },
     "extra": {
       "eas": {
         "projectId": "5b9072ad-68c9-451d-a0a8-b0c48e1c397f"
       }
-    },
-    "owner": "silmarillon",
-    "plugins": [
-      "expo-font"
-    ],
-    "runtimeVersion": "1.0.0",
-    "updates": {
-      "url": "https://u.expo.dev/5b9072ad-68c9-451d-a0a8-b0c48e1c397f"
     }
   }
 }

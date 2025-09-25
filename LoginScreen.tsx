@@ -32,7 +32,7 @@ const LoginScreen = ({ navigation }) => {
     }
 
     setLoading(true);
-    try {navigation
+    try {
       const userCredential = await signInWithEmailAndPassword(auth, email, password);
       const user = userCredential.user;
       
@@ -173,6 +173,9 @@ const LoginScreen = ({ navigation }) => {
           </View>
         </ScrollView>
       </KeyboardAvoidingView>
+
+      {/* Crediti sviluppatore */}
+      <Text style={styles.credits}>App Developer: Massimiliano Spoto</Text>
     </LinearGradient>
   );
 };
@@ -302,6 +305,16 @@ const styles = StyleSheet.create({
   signupLinkText: {
     color: '#3b82f6',
     fontSize: 14,
+  },
+  credits: {
+    position: 'absolute',
+    bottom: 90,
+    left: 0,
+    right: 0,
+    textAlign: 'center',
+    color: 'rgba(255, 255, 255, 0.7)',
+    fontSize: 13,
+    fontStyle: 'italic',
   },
 });
 

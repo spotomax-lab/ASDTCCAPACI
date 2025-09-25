@@ -30,69 +30,76 @@ const SignupScreen = ({ navigation }) => {
   const [cognome, setCognome] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
   const [loading, setLoading] = useState(false);
 
-const handleSignup = async () => {
-  // Validazioni minime (mantieni le tue se ne hai di aggiuntive)
-  if (!nome || !cognome || !email || !password) {
-    Alert.alert('Errore', 'Per favore compila tutti i campi');
-    return;
-  }
-  if (password.length < 6) {
-    Alert.alert('Errore', 'La password deve essere di almeno 6 caratteri');
-    return;
-  }
+  const handleSignup = async () => {
+    // Validazioni
+    if (!nome || !cognome || !email || !password || !confirmPassword) {
+      Alert.alert('Errore', 'Per favore compila tutti i campi');
+      return;
+    }
+    
+    if (password !== confirmPassword) {
+      Alert.alert('Errore', 'Le password non coincidono');
+      return;
+    }
+    
+    if (password.length < 6) {
+      Alert.alert('Errore', 'La password deve essere di almeno 6 caratteri');
+      return;
+    }
 
-  setLoading(true);
-  try {
-    // Pulizia prudenziale di eventuale fallback precedente
-    await AsyncStorage.removeItem('pendingProfile');
-
-    const userCredential = await createUserWithEmailAndPassword(auth, email.trim(), password);
-    const uid = userCredential.user.uid;
-
-    // Imposta displayName (facoltativo ma utile)
+    setLoading(true);
     try {
-      await updateProfile(userCredential.user, { displayName: `${nome} ${cognome}`.trim() });
-    } catch {}
+      // Pulizia prudenziale di eventuale fallback precedente
+      await AsyncStorage.removeItem('pendingProfile');
 
-    // Fallback locale per il primo render del profilo
-    await AsyncStorage.setItem('pendingProfile', JSON.stringify({
-      nome, cognome, email: email.trim()
-    }));
+      const userCredential = await createUserWithEmailAndPassword(auth, email.trim(), password);
+      const uid = userCredential.user.uid;
 
-    // Crea/aggiorna il documento utente PRIMA di uscire da questa schermata (evita race)
-    await setDoc(
-      doc(db, 'users', uid),
-      {
-        nome,
-        cognome,
-        email: email.trim(),
-        isAbbonato: true,
-        dataIscrizione: serverTimestamp(),
-        privacyAccepted: false,
-        profileCompleted: false, // AppNavigator mostrerà ProfiloMandatory
-        role: 'user'
-      },
-      { merge: true }
-    );
+      // Imposta displayName (facoltativo ma utile)
+      try {
+        await updateProfile(userCredential.user, { displayName: `${nome} ${cognome}`.trim() });
+      } catch {}
 
-    // LOG A — conferma creazione doc
-    console.log('[SIGNUP] user doc creato:', uid, { nome, cognome, email: email.trim() });
+      // Fallback locale per il primo render del profilo
+      await AsyncStorage.setItem('pendingProfile', JSON.stringify({
+        nome, cognome, email: email.trim()
+      }));
 
-    // NON navighiamo manualmente: l'AppNavigator mostrerà ProfiloMandatory (profileCompleted=false)
-    Alert.alert('Registrazione completata', 'Account creato. Completa ora il tuo profilo.');
-  } catch (error) {
-    console.error('Errore registrazione:', error);
-    let errorMessage = 'Errore durante la registrazione';
-    if (error?.code === 'auth/email-already-in-use') errorMessage = 'Questa email è già registrata';
-    else if (error?.code === 'auth/invalid-email') errorMessage = 'Email non valida';
-    else if (error?.code === 'auth/weak-password') errorMessage = 'La password è troppo debole';
-    Alert.alert('Errore', errorMessage);
-  } finally {
-    setLoading(false);
-  }
-};
+      // Crea/aggiorna il documento utente PRIMA di uscire da questa schermata (evita race)
+      await setDoc(
+        doc(db, 'users', uid),
+        {
+          nome,
+          cognome,
+          email: email.trim(),
+          isAbbonato: true,
+          dataIscrizione: serverTimestamp(),
+          privacyAccepted: false,
+          profileCompleted: false, // AppNavigator mostrerà ProfiloMandatory
+          role: 'user'
+        },
+        { merge: true }
+      );
+
+      // LOG A — conferma creazione doc
+      console.log('[SIGNUP] user doc creato:', uid, { nome, cognome, email: email.trim() });
+
+      // NON navighiamo manualmente: l'AppNavigator mostrerà ProfiloMandatory (profileCompleted=false)
+      Alert.alert('Registrazione completata', 'Account creato. Completa ora il tuo profilo.');
+    } catch (error) {
+      console.error('Errore registrazione:', error);
+      let errorMessage = 'Errore durante la registrazione';
+      if (error?.code === 'auth/email-already-in-use') errorMessage = 'Questa email è già registrata';
+      else if (error?.code === 'auth/invalid-email') errorMessage = 'Email non valida';
+      else if (error?.code === 'auth/weak-password') errorMessage = 'La password è troppo debole';
+      Alert.alert('Errore', errorMessage);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   return (
     <LinearGradient
@@ -106,7 +113,10 @@ const handleSignup = async () => {
         style={styles.keyboardAvoidingView}
         keyboardVerticalOffset={Platform.OS === 'ios' ? 64 : 0}
       >
-        <ScrollView contentContainerStyle={styles.scrollViewContent}>
+        <ScrollView 
+          contentContainerStyle={styles.scrollViewContent}
+          showsVerticalScrollIndicator={false}
+        >
           <View style={styles.container}>
             <View style={styles.signupBox}>
               {/* Logo */}
@@ -126,7 +136,7 @@ const handleSignup = async () => {
               {/* Form di registrazione */}
               <View style={styles.formContainer}>
                 <View style={styles.inputContainer}>
-                  <Ionicons name="person-outline" size={24} color="#64748b" style={styles.inputIcon} />
+                  <Ionicons name="person-outline" size={20} color="#64748b" style={styles.inputIcon} />
                   <TextInput
                     style={styles.input}
                     placeholder="Nome"
@@ -139,7 +149,7 @@ const handleSignup = async () => {
                 </View>
 
                 <View style={styles.inputContainer}>
-                  <Ionicons name="people-outline" size={24} color="#64748b" style={styles.inputIcon} />
+                  <Ionicons name="people-outline" size={20} color="#64748b" style={styles.inputIcon} />
                   <TextInput
                     style={styles.input}
                     placeholder="Cognome"
@@ -152,7 +162,7 @@ const handleSignup = async () => {
                 </View>
 
                 <View style={styles.inputContainer}>
-                  <Ionicons name="mail-outline" size={24} color="#64748b" style={styles.inputIcon} />
+                  <Ionicons name="mail-outline" size={20} color="#64748b" style={styles.inputIcon} />
                   <TextInput
                     style={styles.input}
                     placeholder="Email"
@@ -166,13 +176,26 @@ const handleSignup = async () => {
                 </View>
 
                 <View style={styles.inputContainer}>
-                  <Ionicons name="lock-closed-outline" size={24} color="#64748b" style={styles.inputIcon} />
+                  <Ionicons name="lock-closed-outline" size={20} color="#64748b" style={styles.inputIcon} />
                   <TextInput
                     style={styles.input}
                     placeholder="Password (min. 6 caratteri)"
                     placeholderTextColor="#64748b"
                     value={password}
                     onChangeText={setPassword}
+                    secureTextEntry
+                    returnKeyType="next"
+                  />
+                </View>
+
+                <View style={styles.inputContainer}>
+                  <Ionicons name="lock-closed-outline" size={20} color="#64748b" style={styles.inputIcon} />
+                  <TextInput
+                    style={styles.input}
+                    placeholder="Conferma Password"
+                    placeholderTextColor="#64748b"
+                    value={confirmPassword}
+                    onChangeText={setConfirmPassword}
                     secureTextEntry
                     returnKeyType="done"
                     onSubmitEditing={handleSignup}
@@ -185,7 +208,7 @@ const handleSignup = async () => {
                   disabled={loading}
                 >
                   {loading ? (
-                    <ActivityIndicator color="white" />
+                    <ActivityIndicator color="white" size="small" />
                   ) : (
                     <Text style={styles.signupButtonText}>Registrati</Text>
                   )}
@@ -202,12 +225,15 @@ const handleSignup = async () => {
 
                 <Text style={styles.warningText}>
                   Le registrazioni effettuate con Cognome e Nome incompleti o non reali saranno eliminate dagli amministratori.
-                  </Text>
+                </Text>
               </View>
             </View>
           </View>
         </ScrollView>
       </KeyboardAvoidingView>
+
+      {/* Crediti sviluppatore */}
+      <Text style={styles.credits}>App Developer: Massimiliano Spoto</Text>
     </LinearGradient>
   );
 };
@@ -224,18 +250,19 @@ const styles = StyleSheet.create({
   scrollViewContent: {
     flexGrow: 1,
     justifyContent: 'center',
+    paddingVertical: 10,
   },
   container: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    padding: 20,
+    padding: 16,
   },
   signupBox: {
     backgroundColor: 'white',
-    marginTop: 40,
-    borderRadius: 20,
-    padding: 25,
+    marginTop: 20,
+    borderRadius: 16,
+    padding: 20,
     width: '100%',
     maxWidth: 400,
     shadowColor: '#000',
@@ -249,45 +276,45 @@ const styles = StyleSheet.create({
   },
   logoContainer: {
     alignItems: 'center',
-    marginBottom: 30,
+    marginBottom: 20,
   },
   logoCircle: {
-    width: 100,
-    height: 100,
-    borderRadius: 50,
+    width: 80,
+    height: 80,
+    borderRadius: 40,
     backgroundColor: 'white',
     justifyContent: 'center',
     alignItems: 'center',
-    marginBottom: 16,
+    marginBottom: 12,
     borderWidth: 2,
     borderColor: '#dbeafe',
   },
   logoImage: {
-    width: 99,
-    height: 99,
-    borderRadius: 10,
+    width: 76,
+    height: 76,
+    borderRadius: 8,
   },
   clubName: {
-    fontSize: 22,
+    fontSize: 20,
     fontWeight: 'bold',
     color: '#1e40af',
     marginBottom: 4,
     textAlign: 'center',
   },
   clubSubtitle: {
-    fontSize: 16,
+    fontSize: 14,
     fontWeight: '400',
     color: '#64748b',
-    marginBottom: 8,
+    marginBottom: 6,
     textAlign: 'center',
   },
   subtitle: {
-    fontSize: 16,
-    color: ' #64748b',
+    fontSize: 14,
+    color: '#64748b',
     textAlign: 'center',
   },
   formContainer: {
-    marginBottom: 20,
+    marginBottom: 10,
   },
   inputContainer: {
     flexDirection: 'row',
@@ -296,49 +323,60 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     borderWidth: 1,
     borderColor: '#e2e8f0',
-    marginBottom: 16,
-    paddingHorizontal: 16,
+    marginBottom: 12,
+    paddingHorizontal: 12,
   },
   inputIcon: {
     marginRight: 8,
   },
   input: {
     flex: 1,
-    height: 50,
-    fontSize: 16,
+    height: 42,
+    fontSize: 15,
     color: '#1e293b',
+    paddingVertical: 8,
   },
   signupButton: {
     backgroundColor: '#3b82f6',
     borderRadius: 8,
-    height: 50,
+    height: 44,
     justifyContent: 'center',
     alignItems: 'center',
-    marginBottom: 16,
+    marginBottom: 12,
   },
   signupButtonDisabled: {
     backgroundColor: '#93c5fd',
   },
   signupButtonText: {
     color: 'white',
-    fontSize: 16,
+    fontSize: 15,
     fontWeight: 'bold',
   },
   loginLink: {
     alignItems: 'center',
-    marginBottom: 16,
+    marginBottom: 12,
   },
   loginLinkText: {
     color: '#3b82f6',
-    fontSize: 14,
+    fontSize: 13,
   },
   warningText: {
-    fontSize: 12,
+    fontSize: 11,
     color: '#94a3b8',
     textAlign: 'center',
     fontStyle: 'italic',
-    marginTop: 10,
-    lineHeight: 16,
+    marginTop: 8,
+    lineHeight: 14,
+  },
+  credits: {
+     position: 'absolute',
+    bottom: 40,
+    left: 0,
+    right: 0,
+    textAlign: 'center',
+    color: 'rgba(255, 255, 255, 0.7)',
+    fontSize: 13,
+    fontStyle: 'italic',
   },
 });
 

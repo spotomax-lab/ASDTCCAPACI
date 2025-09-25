@@ -1,0 +1,105 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Funzioni di supporto
+    function isAdmin() {
+      return request.auth != null && request.auth.token.role == 'admin';
+    }
+    
+    function isOwner(userId) {
+      return request.auth != null && request.auth.uid == userId;
+    }
+    
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    // Funzione per estrarre l'userID dal document ID
+    function extractUserIdFromDocumentId(documentId) {
+      return documentId.split('_')[0];
+    }
+
+    // Funzione per verificare se il documento ha la struttura corretta
+    function hasValidUserWeeklyBookingStructure() {
+      return request.resource.data.keys().hasAll(['count', 'userId', 'week', 'updatedAt']) &&
+             request.resource.data.userId is string &&
+             request.resource.data.week is string &&
+             request.resource.data.count is number;
+    }
+
+    // Regole per gli utenti
+    match /users/{userId} {
+      allow read: if isAuthenticated();
+      allow write: if isOwner(userId) || isAdmin();
+    }
+    
+    // Regole per le prenotazioni
+    match /bookings/{bookingId} {
+      allow read: if isAuthenticated();
+      allow create: if isOwner(request.resource.data.userId) || isAdmin();
+      allow update, delete: if isOwner(resource.data.userId) || isAdmin();
+    }
+
+    // Aggiungi questa regola per permettere lettura prenotazioni agli utenti in userIds
+    match /bookings/{bookingId} {
+       allow read: if isAuthenticated() && 
+    (request.auth.uid in resource.data.userIds || isAdmin());
+    }
+
+    // Regole per userWeeklyBookings - OTTIMIZZATE
+    match /userWeeklyBookings/{documentId} {
+      // Permetti la lettura se l'userID estratto dal documentId corrisponde all'UID dell'utente
+      allow read: if isAuthenticated() && 
+                   extractUserIdFromDocumentId(documentId) == request.auth.uid;
+      
+      // Permetti la creazione se:
+      // 1. L'utente è autenticato
+      // 2. L'userID estratto dal documentId corrisponde all'UID dell'utente
+      // 3. Il campo userId nei dati corrisponde all'UID dell'utente
+      // 4. Il documento ha la struttura corretta
+      allow create: if isAuthenticated() && 
+                    extractUserIdFromDocumentId(documentId) == request.auth.uid &&
+                    request.resource.data.userId == request.auth.uid &&
+                    hasValidUserWeeklyBookingStructure();
+      
+      // Permetti l'aggiornamento se:
+      // 1. L'utente è autenticato
+      // 2. L'userID estratto dal documentId corrisponde all'UID dell'utente
+      // 3. Il campo userId nei dati non viene modificato
+      // 4. Il campo week non viene modificato
+      allow update: if isAuthenticated() && 
+                    extractUserIdFromDocumentId(documentId) == request.auth.uid &&
+                    request.resource.data.userId == resource.data.userId &&
+                    request.resource.data.week == resource.data.week;
+    }
+    
+    // Regole per i blocchi manuali
+    match /blockedSlots/{blockId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+    
+    // Regole per le configurazioni degli slot
+    match /slotConfigurations/{configId} {
+      allow read, write: if isAdmin();
+    }
+    
+    // Regole per le notifiche
+    match /notifications/{notificationId} {
+      // Permetti la lettura solo al destinatario o agli admin
+      allow read: if isOwner(resource.data.userId) || isAdmin();
+      
+      // Permetti la scrittura (creazione) a tutti gli utenti autenticati per le notifiche
+      allow create: if isAuthenticated();
+      
+      // Solo gli admin possono aggiornare o eliminare notifiche
+      allow update, delete: if isAdmin();
+    }
+    
+    // Regole per i campi (courts)
+    match /courts/{courtId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+  }
+}

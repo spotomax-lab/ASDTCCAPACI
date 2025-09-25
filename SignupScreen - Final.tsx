@@ -13,13 +13,14 @@ import {
   Platform,
   Image
 } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import { 
   createUserWithEmailAndPassword, 
   updateProfile
 } from 'firebase/auth';
-import { doc, setDoc } from 'firebase/firestore';
+import { doc, setDoc, serverTimestamp } from 'firebase/firestore';
 import { auth, db } from './config/firebase';
 
 const { width, height } = Dimensions.get('window');
@@ -29,14 +30,21 @@ const SignupScreen = ({ navigation }) => {
   const [cognome, setCognome] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
   const [loading, setLoading] = useState(false);
 
   const handleSignup = async () => {
-    if (!nome || !cognome || !email || !password) {
+    // Validazioni
+    if (!nome || !cognome || !email || !password || !confirmPassword) {
       Alert.alert('Errore', 'Per favore compila tutti i campi');
       return;
     }
-
+    
+    if (password !== confirmPassword) {
+      Alert.alert('Errore', 'Le password non coincidono');
+      return;
+    }
+    
     if (password.length < 6) {
       Alert.alert('Errore', 'La password deve essere di almeno 6 caratteri');
       return;
@@ -44,47 +52,50 @@ const SignupScreen = ({ navigation }) => {
 
     setLoading(true);
     try {
-      const userCredential = await createUserWithEmailAndPassword(auth, email, password);
-      
-      await updateProfile(userCredential.user, {
-        displayName: `${nome} ${cognome}`
-      });
+      // Pulizia prudenziale di eventuale fallback precedente
+      await AsyncStorage.removeItem('pendingProfile');
 
-      await setDoc(doc(db, 'users', userCredential.user.uid), {
-        nome,
-        cognome,
-        email,
-        isAbbonato: true,
-        dataIscrizione: new Date(),
-        privacyAccepted: false,
-        profileCompleted: false,
-        role: 'user' // Aggiungi questo campo obbligatorio
-        // Rimossa la verifica email: emailVerified: true
-      });
+      const userCredential = await createUserWithEmailAndPassword(auth, email.trim(), password);
+      const uid = userCredential.user.uid;
 
-      Alert.alert(
-        'Registrazione completata', 
-        'Il tuo account è stato creato con successo. Completa ora il tuo profilo.',
-        [
-          {
-            text: 'OK',
-            onPress: () => navigation.navigate('Profilo', { 
-              mandatory: true,
-              cognome: cognome,
-              nome: nome,
-              email: email
-            })
-          }
-        ]
+      // Imposta displayName (facoltativo ma utile)
+      try {
+        await updateProfile(userCredential.user, { displayName: `${nome} ${cognome}`.trim() });
+      } catch {}
+
+      // Fallback locale per il primo render del profilo
+      await AsyncStorage.setItem('pendingProfile', JSON.stringify({
+        nome, cognome, email: email.trim()
+      }));
+
+      // Crea/aggiorna il documento utente PRIMA di uscire da questa schermata (evita race)
+      await setDoc(
+        doc(db, 'users', uid),
+        {
+          nome,
+          cognome,
+          email: email.trim(),
+          isAbbonato: true,
+          dataIscrizione: serverTimestamp(),
+          privacyAccepted: false,
+          profileCompleted: false, // AppNavigator mostrerà ProfiloMandatory
+          role: 'user'
+        },
+        { merge: true }
       );
-      
+
+      // LOG A — conferma creazione doc
+      console.log('[SIGNUP] user doc creato:', uid, { nome, cognome, email: email.trim() });
+
+      // NON navighiamo manualmente: l'AppNavigator mostrerà ProfiloMandatory (profileCompleted=false)
+      Alert.alert('Registrazione completata', 'Account creato. Completa ora il tuo profilo.');
     } catch (error) {
-      console.error('Signup error:', error);
-      let msg = 'Errore durante la registrazione';
-      if (error.code === 'auth/email-already-in-use') msg = 'Questa email è già registrata.';
-      else if (error.code === 'auth/invalid-email') msg = 'Email non valida.';
-      else if (error.code === 'auth/weak-password') msg = 'Password troppo debole.';
-      Alert.alert('Errore', msg);
+      console.error('Errore registrazione:', error);
+      let errorMessage = 'Errore durante la registrazione';
+      if (error?.code === 'auth/email-already-in-use') errorMessage = 'Questa email è già registrata';
+      else if (error?.code === 'auth/invalid-email') errorMessage = 'Email non valida';
+      else if (error?.code === 'auth/weak-password') errorMessage = 'La password è troppo debole';
+      Alert.alert('Errore', errorMessage);
     } finally {
       setLoading(false);
     }
@@ -170,6 +181,19 @@ const SignupScreen = ({ navigation }) => {
                     value={password}
                     onChangeText={setPassword}
                     secureTextEntry
+                    returnKeyType="next"
+                  />
+                </View>
+
+                <View style={styles.inputContainer}>
+                  <Ionicons name="lock-closed-outline" size={24} color="#64748b" style={styles.inputIcon} />
+                  <TextInput
+                    style={styles.input}
+                    placeholder="Conferma Password"
+                    placeholderTextColor="#64748b"
+                    value={confirmPassword}
+                    onChangeText={setConfirmPassword}
+                    secureTextEntry
                     returnKeyType="done"
                     onSubmitEditing={handleSignup}
                   />
@@ -198,7 +222,7 @@ const SignupScreen = ({ navigation }) => {
 
                 <Text style={styles.warningText}>
                   Le registrazioni effettuate con Cognome e Nome incompleti o non reali saranno eliminate dagli amministratori.
-                  </Text>
+                </Text>
               </View>
             </View>
           </View>
@@ -229,6 +253,7 @@ const styles = StyleSheet.create({
   },
   signupBox: {
     backgroundColor: 'white',
+    marginTop: 40,
     borderRadius: 20,
     padding: 25,
     width: '100%',

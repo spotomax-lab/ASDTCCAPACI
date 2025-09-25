@@ -1,4 +1,3 @@
-
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   View,
@@ -46,6 +45,26 @@ function getDayOfWeek(date: Date) {
   return date.getDay();
 }
 
+// Funzione per formattare automaticamente l'input dell'orario
+const formatTimeInput = (text: string): string => {
+  // Rimuovi tutto tranne numeri
+  const numbers = text.replace(/\D/g, '');
+  
+  if (numbers.length === 0) return '';
+  if (numbers.length === 1) return numbers;
+  if (numbers.length === 2) return numbers;
+  if (numbers.length === 3) return `${numbers.slice(0, 2)}:${numbers.slice(2)}`;
+  if (numbers.length === 4) return `${numbers.slice(0, 2)}:${numbers.slice(2)}`;
+  
+  return `${numbers.slice(0, 2)}:${numbers.slice(2, 4)}`;
+};
+
+// Funzione per validare l'orario
+const isValidTime = (time: string): boolean => {
+  const timeRegex = /^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/;
+  return timeRegex.test(time);
+};
+
 export default function SlotConfigurationScreen() {
   const { userData } = useAuth();
   const [selectedDate, setSelectedDate] = useState(new Date());
@@ -53,8 +72,6 @@ export default function SlotConfigurationScreen() {
 
   const [cells, setCells] = useState<Cell[]>(() => Array.from({ length: 15 }, () => ({})));
   const [copiedCells, setCopiedCells] = useState<Cell[] | null>(null);
-  const [repeatWeeks, setRepeatWeeks] = useState<string>('1');
-
   const [editorVisible, setEditorVisible] = useState(false);
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
   const [tmpStart, setTmpStart] = useState('08:00');
@@ -62,6 +79,7 @@ export default function SlotConfigurationScreen() {
   const [tmpEnd, setTmpEnd] = useState('09:00');
   const [tmpType, setTmpType] = useState<ActivityType>('regular');
   const [tmpNotes, setTmpNotes] = useState('');
+  const [timeInput, setTimeInput] = useState('08:00'); // Stato separato per l'input non formattato
 
   if (!userData || userData.role !== 'admin') {
     return (
@@ -72,7 +90,7 @@ export default function SlotConfigurationScreen() {
   }
 
   useEffect(() => {
-    if (!tmpStart) return;
+    if (!tmpStart || !isValidTime(tmpStart)) return;
     const [h, m] = tmpStart.split(':').map(n => parseInt(n, 10));
     const total = h * 60 + m + (tmpDuration || 0);
     const eh = Math.floor(total / 60);
@@ -116,12 +134,20 @@ export default function SlotConfigurationScreen() {
   }, [selectedCourt, dayOfWeek]);
 
   const openEditor = (index: number) => {
-    
     setEditingIndex(index);
     const current = cells[index] || {} as any;
 
+    // Trova l'orario di fine dello slot precedente per preimpostare l'inizio
+    let suggestedStart = '08:00';
+    if (index > 0) {
+      const prevCell = cells[index - 1];
+      if (prevCell && prevCell.endTime) {
+        suggestedStart = prevCell.endTime;
+      }
+    }
+
     // Prefer exact values if present
-    const start = current.startTime || tmpStart || '08:00';
+    const start = current.startTime || suggestedStart;
     const end = current.endTime || null;
     const durFromCfg = typeof current.slotDuration === 'number' ? current.slotDuration : null;
     const type = (current.activityType || tmpType || 'regular') as ActivityType;
@@ -156,12 +182,41 @@ export default function SlotConfigurationScreen() {
     }
 
     setTmpStart(startVal);
+    setTimeInput(startVal); // Imposta anche l'input non formattato
     setTmpDuration(durationVal);
     setTmpType(type);
     setTmpNotes(notes);
     setTmpEnd(endVal);
     setEditorVisible(true);
-};
+  };
+
+  const handleTimeInputChange = (text: string) => {
+    setTimeInput(text);
+    
+    // Formatta automaticamente l'input
+    const formatted = formatTimeInput(text);
+    if (formatted !== text) {
+      setTimeInput(formatted);
+    }
+    
+    // Aggiorna tmpStart solo quando l'input è valido
+    if (isValidTime(formatted)) {
+      setTmpStart(formatted);
+    }
+  };
+
+  const handleTimeInputBlur = () => {
+    // All'uscita dal campo, assicurati che il tempo sia formattato correttamente
+    const formatted = formatTimeInput(timeInput);
+    setTimeInput(formatted);
+    
+    if (isValidTime(formatted)) {
+      setTmpStart(formatted);
+    } else {
+      // Se non valido, ripristina il valore precedente
+      setTimeInput(tmpStart);
+    }
+  };
 
   const clearCell = (index: number) => {
     const next = [...cells];
@@ -171,6 +226,13 @@ export default function SlotConfigurationScreen() {
 
   const saveCell = () => {
     if (editingIndex == null) return;
+    
+    // Validazione finale
+    if (!isValidTime(tmpStart)) {
+      Alert.alert('Errore', 'Inserisci un orario di inizio valido (formato HH:MM)');
+      return;
+    }
+
     const next = [...cells];
     next[editingIndex] = {
       startTime: tmpStart,
@@ -191,10 +253,6 @@ export default function SlotConfigurationScreen() {
   const handlePaste = () => {
     if (!copiedCells) return;
     setCells(copiedCells.map(c => ({ ...c })));
-  };
-
-  const handleApplyWeekdays = () => {
-    Alert.alert('Applicato', 'La stessa configurazione verrà usata per Lun–Ven quando salvi.');
   };
 
   const saveAll = async () => {
@@ -237,26 +295,21 @@ export default function SlotConfigurationScreen() {
   }, [selectedDate]);
 
   return (
-    <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 24 }} style={{ flex: 1, backgroundColor: '#f3f4f6' }}>
+    <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 50, flexGrow: 1 }} style={{ flex: 1, backgroundColor: '#f3f4f6' }}>
       <Text style={styles.title}>Configurazione Slot Orari</Text>
 
-      <View style={styles.dateRow}>
-        <TouchableOpacity style={styles.navBtn} onPress={prevDay}>
-          <Ionicons name="chevron-back" size={18} color="#2563eb" />
-        </TouchableOpacity>
-        <View style={styles.dateDisplay}>
-          <Ionicons name="calendar" size={16} color="#2563eb" style={{ marginRight: 6 }} />
-          <Text style={styles.dateText}>{dateLabel}</Text>
-        </View>
-        <View style={{ flexDirection: 'row', gap: 8 }}>
-          <TouchableOpacity style={styles.navBtn} onPress={today}>
-            <Text style={{ color: '#2563eb', fontWeight: '600' }}>Oggi</Text>
-          </TouchableOpacity>
-          <TouchableOpacity style={styles.navBtn} onPress={nextDay}>
-            <Ionicons name="chevron-forward" size={18} color="#2563eb" />
-          </TouchableOpacity>
-        </View>
-      </View>
+     <View style={styles.dateRow}>
+  <TouchableOpacity style={styles.navBtn} onPress={prevDay}>
+    <Ionicons name="chevron-back" size={18} color="#2563eb" />
+  </TouchableOpacity>
+  <View style={styles.dateDisplay}>
+    <Ionicons name="calendar" size={16} color="#2563eb" style={{ marginRight: 6 }} />
+    <Text style={styles.dateText}>{dateLabel}</Text>
+  </View>
+  <TouchableOpacity style={styles.navBtn} onPress={nextDay}>
+    <Ionicons name="chevron-forward" size={18} color="#2563eb" />
+  </TouchableOpacity>
+</View>
 
       <View style={styles.courtRow}>
         <Text style={styles.courtLabel}>Campo:</Text>
@@ -274,7 +327,7 @@ export default function SlotConfigurationScreen() {
         </TouchableOpacity>
       </View>
 
-      <Text style={styles.helper}>Tocca un riquadro per impostare orari, durata, tipologia e note. Gli slot con tipologia diversa da “Campo libero” risultano non prenotabili.</Text>
+      <Text style={styles.helper}>Tocca un riquadro per impostare orari, durata, tipologia e note. Gli slot con tipologia diversa da "Campo libero" risultano non prenotabili.</Text>
 
       <View style={styles.actionsRow}>
         <TouchableOpacity style={styles.actionChip} onPress={handleCopy}>
@@ -285,21 +338,6 @@ export default function SlotConfigurationScreen() {
           <Ionicons name="clipboard" size={16} color="#2563eb" />
           <Text style={styles.actionChipText}>Incolla</Text>
         </TouchableOpacity>
-        <TouchableOpacity style={styles.actionChip} onPress={handleApplyWeekdays}>
-          <Ionicons name="checkbox" size={16} color="#2563eb" />
-          <Text style={styles.actionChipText}>Applica a Lun–Ven</Text>
-        </TouchableOpacity>
-        <View style={[styles.actionChip, { paddingVertical: 6 }]}>
-          <Text style={styles.actionChipText}>Ripeti per</Text>
-          <TextInput
-            style={styles.repeatInput}
-            value={repeatWeeks}
-            onChangeText={setRepeatWeeks}
-            keyboardType="number-pad"
-            maxLength={2}
-          />
-          <Text style={styles.actionChipText}>settimane</Text>
-        </View>
       </View>
 
       <View style={styles.grid}>
@@ -330,7 +368,15 @@ export default function SlotConfigurationScreen() {
 
             <View style={styles.formRow}>
               <Text style={styles.label}>Ora inizio (HH:MM)</Text>
-              <TextInput style={styles.input} value={tmpStart} onChangeText={setTmpStart} placeholder="08:00" keyboardType="numbers-and-punctuation" />
+              <TextInput 
+                style={styles.input} 
+                value={timeInput}
+                onChangeText={handleTimeInputChange}
+                onBlur={handleTimeInputBlur}
+                placeholder="08:00 o 1130" 
+                keyboardType="numbers-and-punctuation" 
+              />
+              <Text style={styles.helperText}>Puoi digitare "1130" invece di "11:30"</Text>
             </View>
 
             <View style={styles.formRow}>
@@ -358,7 +404,13 @@ export default function SlotConfigurationScreen() {
 
             <View style={styles.formRow}>
               <Text style={styles.label}>Note (opzionale)</Text>
-              <TextInput style={styles.input} value={tmpNotes} onChangeText={setTmpNotes} placeholder="Es. Gruppo Azzurro / Maestro Enea" />
+              <TextInput 
+                style={styles.input} 
+                value={tmpNotes} 
+                onChangeText={setTmpNotes} 
+                placeholder="Es. Gruppo Azzurro / Maestro Enea" 
+              />
+              <Text style={styles.helperText}>Queste note saranno visibili nelle info slot</Text>
             </View>
 
             <View style={styles.modalActions}>
@@ -395,11 +447,10 @@ const styles = StyleSheet.create({
   courtBtnText: { color: '#3b82f6', fontWeight: '600' },
   courtBtnTextActive: { color: '#fff' },
   helper: { color: '#6b7280', marginBottom: 12 },
+  helperText: { fontSize: 12, color: '#6b7280', marginTop: 4 },
   actionsRow: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 8, marginBottom: 12 },
   actionChip: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#eef2ff', paddingVertical: 8, paddingHorizontal: 12, borderRadius: 999 },
   actionChipText: { color: '#2563eb', marginLeft: 6, fontSize: 13 },
-  actionChipDisabled: { backgroundColor: '#f3f4f6' },
-  repeatInput: { minWidth: 30, paddingHorizontal: 6, paddingVertical: 2, borderRadius: 6, backgroundColor: '#fff', marginHorizontal: 6, borderColor: '#d1d5db', borderWidth: 1, textAlign: 'center' },
 
   grid: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between' },
   gridCell: { 

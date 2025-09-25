@@ -11,9 +11,11 @@ import React, { useEffect, useState } from 'react';
 import LoginScreen from './LoginScreen';
 import SignupScreen from './SignupScreen';
 import BookingScreen from './screens/BookingScreen';
-import PrenotazioniScreen from './PrenotazioniScreen';
+import PartiteTabs from './PartiteTabs';
 import ProfiloScreen from './ProfiloScreen';
 import AdminScreen from './AdminScreen';
+import MyBookingsScreen from './MyBookingsScreen';
+import OpenMatchesScreen from './OpenMatchesScreen';
 
 // Import del contesto di autenticazione
 import { AuthProvider, useAuth } from './context/AuthContext';
@@ -120,7 +122,7 @@ function MainTabs() {
 
           if (route.name === 'Prenota') {
             iconName = focused ? 'tennisball' : 'tennisball-outline';
-          } else if (route.name === 'Prenotazioni') {
+          } else if (route.name === 'Partite') {
             iconName = focused ? 'list' : 'list-outline';
           } else if (route.name === 'Profilo') {
             iconName = focused ? 'person' : 'person-outline';
@@ -144,10 +146,10 @@ function MainTabs() {
         }}
       />
       <Tab.Screen 
-        name="Prenotazioni" 
-        component={PrenotazioniScreen}
+        name="Partite" 
+        component={PartiteTabs}
         options={{
-          title: 'Prenotazioni',
+          title: 'Partite',
         }}
       />
       {isAdmin && (

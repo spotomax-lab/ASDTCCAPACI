@@ -39,4 +39,6 @@ export const blockSchema = {
   end: 'timestamp',
   description: 'string',
   createdAt: 'timestamp'
+  isRecurring: 'boolean', // NUOVO CAMPO: true per ricorrenti, false per una-tantum
+  recurrencePattern: 'string' // Opzionale: es. "weekly", "monthly"
 };

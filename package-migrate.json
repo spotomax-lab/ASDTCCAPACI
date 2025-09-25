@@ -1,0 +1,11 @@
+{
+  "name": "migrate-blocks",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "migrate": "node migrateBlocks.js"
+  },
+  "dependencies": {
+    "firebase": "^10.7.1"
+  }
+}

@@ -15,86 +15,70 @@ import {
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
-import { 
-  createUserWithEmailAndPassword, 
-  updateProfile
-} from 'firebase/auth';
-import { doc, setDoc } from 'firebase/firestore';
-import { auth, db } from './config/firebase';
+import { signInWithEmailAndPassword, sendPasswordResetEmail } from 'firebase/auth';
+import { auth } from './config/firebase';
 
 const { width, height } = Dimensions.get('window');
 
-const SignupScreen = ({ navigation }) => {
-  const [nome, setNome] = useState('');
-  const [cognome, setCognome] = useState('');
+const LoginScreen = ({ navigation }) => {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
 
-  const handleSignup = async () => {
-    if (!nome || !cognome || !email || !password) {
-      Alert.alert('Errore', 'Per favore compila tutti i campi');
-      return;
-    }
-
-    if (password.length < 6) {
-      Alert.alert('Errore', 'La password deve essere di almeno 6 caratteri');
+  const handleLogin = async () => {
+    if (!email || !password) {
+      Alert.alert('Errore', 'Per favore inserisci email e password');
       return;
     }
 
     setLoading(true);
-    try {
-      const userCredential = await createUserWithEmailAndPassword(auth, email, password);
+    try {navigation
+      const userCredential = await signInWithEmailAndPassword(auth, email, password);
+      const user = userCredential.user;
       
-      await updateProfile(userCredential.user, {
-        displayName: `${nome} ${cognome}`
-      });
-
-      await setDoc(doc(db, 'users', userCredential.user.uid), {
-        nome,
-        cognome,
-        email,
-        isAbbonato: true,
-        dataIscrizione: new Date(),
-        privacyAccepted: false,
-        profileCompleted: false,
-        role: 'user' // Aggiungi questo campo obbligatorio
-        // Rimossa la verifica email: emailVerified: true
-      });
-
-      Alert.alert(
-        'Registrazione completata', 
-        'Il tuo account è stato creato con successo. Completa ora il tuo profilo.',
-        [
-          {
-            text: 'OK',
-            onPress: () => navigation.navigate('Profilo', { 
-              mandatory: true,
-              cognome: cognome,
-              nome: nome,
-              email: email
-            })
-          }
-        ]
-      );
-      
+     
     } catch (error) {
       console.log('Errore completo:', error);
-      let errorMessage = 'Errore durante la registrazione';
+      let errorMessage = 'Errore durante il login';
       
-      if (error.code === 'auth/email-already-in-use') {
-        errorMessage = 'Email già registrata';
-      } else if (error.code === 'auth/invalid-email') {
+      if (error.code === 'auth/invalid-email') {
         errorMessage = 'Email non valida';
-      } else if (error.code === 'auth/weak-password') {
-        errorMessage = 'Password troppo debole';
-      } else if (error.code === 'auth/operation-not-allowed') {
-        errorMessage = 'Registrazione non abilitata';
+      } else if (error.code === 'auth/user-disabled') {
+        errorMessage = 'Account disabilitato';
+      } else if (error.code === 'auth/user-not-found') {
+        errorMessage = 'Utente non trovato';
+      } else if (error.code === 'auth/wrong-password') {
+        errorMessage = 'Password errata';
+      } else if (error.code === 'auth/too-many-requests') {
+        errorMessage = 'Troppi tentativi falliti. Riprova più tardi.';
       }
       
       Alert.alert('Errore', errorMessage);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handlePasswordReset = async () => {
+    if (!email) {
+      Alert.alert('Errore', 'Inserisci la tua email per reimpostare la password');
+      return;
+    }
+
+    try {
+      await sendPasswordResetEmail(auth, email);
+      Alert.alert('Email inviata', 'Controlla la tua casella email per reimpostare la password');
+    } catch (error) {
+      console.error('Errore nel reset password:', error);
+      let errorMessage = 'Impossibile inviare l\'email di reset';
+      
+      if (error.code === 'auth/user-not-found') {
+        errorMessage = 'Nessun account associato a questa email';
+      } else if (error.code === 'auth/invalid-email') {
+        errorMessage = 'Email non valida';
+      }
+      
+      Alert.alert('Errore', errorMessage);
     }
   };
 
@@ -112,7 +96,7 @@ const SignupScreen = ({ navigation }) => {
       >
         <ScrollView contentContainerStyle={styles.scrollViewContent}>
           <View style={styles.container}>
-            <View style={styles.signupBox}>
+            <View style={styles.loginBox}>
               {/* Logo */}
               <View style={styles.logoContainer}>
                 <View style={styles.logoCircle}>
@@ -124,37 +108,11 @@ const SignupScreen = ({ navigation }) => {
                 </View>
                 <Text style={styles.clubName}>A.S.D. T.C. CAPACI</Text>
                 <Text style={styles.clubSubtitle}>Tennis Club</Text>
-                <Text style={styles.subtitle}>Crea il tuo account</Text>
+                <Text style={styles.subtitle}>Accedi al tuo account</Text>
               </View>
 
-              {/* Form di registrazione */}
+              {/* Form di login */}
               <View style={styles.formContainer}>
-                <View style={styles.inputContainer}>
-                  <Ionicons name="person-outline" size={24} color="#64748b" style={styles.inputIcon} />
-                  <TextInput
-                    style={styles.input}
-                    placeholder="Nome"
-                    placeholderTextColor="#64748b"
-                    value={nome}
-                    onChangeText={setNome}
-                    autoCapitalize="words"
-                    returnKeyType="next"
-                  />
-                </View>
-
-                <View style={styles.inputContainer}>
-                  <Ionicons name="people-outline" size={24} color="#64748b" style={styles.inputIcon} />
-                  <TextInput
-                    style={styles.input}
-                    placeholder="Cognome"
-                    placeholderTextColor="#64748b"
-                    value={cognome}
-                    onChangeText={setCognome}
-                    autoCapitalize="words"
-                    returnKeyType="next"
-                  />
-                </View>
-
                 <View style={styles.inputContainer}>
                   <Ionicons name="mail-outline" size={24} color="#64748b" style={styles.inputIcon} />
                   <TextInput
@@ -173,40 +131,43 @@ const SignupScreen = ({ navigation }) => {
                   <Ionicons name="lock-closed-outline" size={24} color="#64748b" style={styles.inputIcon} />
                   <TextInput
                     style={styles.input}
-                    placeholder="Password (min. 6 caratteri)"
+                    placeholder="Password"
                     placeholderTextColor="#64748b"
                     value={password}
                     onChangeText={setPassword}
                     secureTextEntry
                     returnKeyType="done"
-                    onSubmitEditing={handleSignup}
+                    onSubmitEditing={handleLogin}
                   />
                 </View>
 
                 <TouchableOpacity 
-                  style={[styles.signupButton, loading && styles.signupButtonDisabled]} 
-                  onPress={handleSignup}
+                  style={[styles.loginButton, loading && styles.loginButtonDisabled]} 
+                  onPress={handleLogin}
                   disabled={loading}
                 >
                   {loading ? (
                     <ActivityIndicator color="white" />
                   ) : (
-                    <Text style={styles.signupButtonText}>Registrati</Text>
+                    <Text style={styles.loginButtonText}>Accedi</Text>
                   )}
                 </TouchableOpacity>
 
                 <TouchableOpacity 
-                  style={styles.loginLink}
-                  onPress={() => navigation.navigate('Login')}
+                  style={styles.passwordResetLink}
+                  onPress={() => handlePasswordReset()}
                 >
-                  <Text style={styles.loginLinkText}>
-                    Hai già un account? Accedi
-                  </Text>
+                  <Text style={styles.passwordResetText}>Hai dimenticato la password?</Text>
                 </TouchableOpacity>
 
-                <Text style={styles.warningText}>
-                  Le registrazioni effettuate con Cognome e Nome incompleti o non reali saranno eliminate dagli amministratori.
+                <TouchableOpacity 
+                  style={styles.signupLink}
+                  onPress={() => navigation.navigate('Signup')}
+                >
+                  <Text style={styles.signupLinkText}>
+                    Non hai un account? Registrati
                   </Text>
+                </TouchableOpacity>
               </View>
             </View>
           </View>
@@ -235,7 +196,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     padding: 20,
   },
-  signupBox: {
+  loginBox: {
     backgroundColor: 'white',
     borderRadius: 20,
     padding: 25,
@@ -286,7 +247,7 @@ const styles = StyleSheet.create({
   },
   subtitle: {
     fontSize: 16,
-    color: ' #64748b',
+    color: '#64748b',
     textAlign: 'center',
   },
   formContainer: {
@@ -311,7 +272,7 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: '#1e293b',
   },
-  signupButton: {
+  loginButton: {
     backgroundColor: '#3b82f6',
     borderRadius: 8,
     height: 50,
@@ -319,30 +280,29 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginBottom: 16,
   },
-  signupButtonDisabled: {
+  loginButtonDisabled: {
     backgroundColor: '#93c5fd',
   },
-  signupButtonText: {
+  loginButtonText: {
     color: 'white',
     fontSize: 16,
     fontWeight: 'bold',
   },
-  loginLink: {
+  passwordResetLink: {
     alignItems: 'center',
     marginBottom: 16,
   },
-  loginLinkText: {
+  passwordResetText: {
     color: '#3b82f6',
     fontSize: 14,
   },
-  warningText: {
-    fontSize: 12,
-    color: '#94a3b8',
-    textAlign: 'center',
-    fontStyle: 'italic',
-    marginTop: 10,
-    lineHeight: 16,
+  signupLink: {
+    alignItems: 'center',
+  },
+  signupLinkText: {
+    color: '#3b82f6',
+    fontSize: 14,
   },
 });
 
-export default SignupScreen;
+export default LoginScreen;

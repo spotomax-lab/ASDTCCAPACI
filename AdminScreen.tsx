@@ -90,6 +90,19 @@ const AdminScreen = () => {
   const applyFilters = () => {
     let result = [...bookings];
     
+    // Filtra le prenotazioni passate
+    const now = new Date();
+    result = result.filter(booking => {
+      try {
+        const bookingDate = new Date(booking.date);
+        const [hours, minutes] = booking.startTime.split(':').map(Number);
+        bookingDate.setHours(hours, minutes, 0, 0);
+        return bookingDate >= now;
+      } catch (error) {
+        return true; // In caso di errore, mantieni la prenotazione
+      }
+    });
+    
     if (filterDate) {
       const filterDateString = filterDate.toISOString().split('T')[0];
       result = result.filter(booking => booking.date === filterDateString);

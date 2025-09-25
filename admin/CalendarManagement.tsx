@@ -9,7 +9,8 @@ import {
   ActivityIndicator,
   Dimensions,
   TextInput,
-  Modal
+  Modal,
+  Platform
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import DateTimePicker from '@react-native-community/datetimepicker';
@@ -19,6 +20,49 @@ import { db } from '../config/firebase';
 import { useAuth } from '../context/AuthContext';
 
 const { height } = Dimensions.get('window');
+
+// Funzione per verificare se uno slot è nel passato
+const isSlotPassato = (slot, selectedDate) => {
+  try {
+    const now = new Date();
+    const dataSlot = new Date(selectedDate);
+    const [ore, minuti] = slot.start.split(':').map(Number);
+    dataSlot.setHours(ore, minuti, 0, 0);
+    
+    return dataSlot < now;
+  } catch (error) {
+    console.error('Errore nel controllo data/ora slot:', error);
+    return false;
+  }
+};
+
+// NUOVA FUNZIONE: Ottiene le note dalla configurazione slot
+const getSlotNotes = (slot, selectedField, selectedDate, slotConfigurations) => {
+  if (!selectedField) return null;
+  
+  try {
+    const dayOfWeek = selectedDate.getDay();
+    const courtId = selectedField.replace('Campo ', '');
+    const key = `${courtId}_${dayOfWeek}`;
+    const dayConfigs = slotConfigurations[key] || [];
+    
+    const dateString = selectedDate.toISOString().split('T')[0];
+    const slotStartTime = new Date(`${dateString}T${slot.start}:00`);
+    const slotEndTime = new Date(`${dateString}T${slot.end}:00`);
+    
+    const config = dayConfigs.find(cfg => {
+      if (!cfg || cfg.isActive === false) return false;
+      const cfgStart = new Date(`${dateString}T${cfg.startTime}:00`);
+      const cfgEnd = new Date(`${dateString}T${cfg.endTime}:00`);
+      return slotStartTime < cfgEnd && slotEndTime > cfgStart && cfg.activityType && cfg.activityType !== 'regular';
+    });
+    
+    return config ? config.notes || null : null;
+  } catch (error) {
+    console.error('Errore nel recupero delle note:', error);
+    return null;
+  }
+};
 
 // Componente per la visualizzazione del calendario
 const CalendarView = ({ 
@@ -34,6 +78,69 @@ const CalendarView = ({
   onDeleteBooking,
   slotConfigurations = {}
 }) => {
+  // Funzione per renderizzare le icone dei giocatori
+  const renderPlayerIcons = (booking) => {
+    if (!booking) return null;
+    
+    const maxPlayers = booking.maxPlayers || (booking.matchType === 'singles' ? 2 : 4);
+
+    if (booking.type === 'normal' || booking.type === 'standard') {
+      if (booking.status === 'pending') {
+        const icons = [];
+        
+        const confirmedPlayers = booking.players.filter(player => player.status === 'confirmed');
+        confirmedPlayers.forEach((_, index) => {
+          icons.push(
+            <Ionicons key={`confirmed-${index}`} name="person" size={16} color="#3b82f6" style={calendarStyles.playerIcon} />
+          );
+        });
+        
+        const pendingCount = booking.invitedPlayers ? booking.invitedPlayers.filter(player => player.status === 'pending').length : 0;
+        for (let i = 0; i < pendingCount; i++) {
+          icons.push(
+            <Ionicons key={`pending-${i}`} name="person" size={16} color="#f59e0b" style={calendarStyles.playerIcon} />
+          );
+        }
+        
+        return icons;
+      } else {
+        return Array(maxPlayers).fill(0).map((_, index) => (
+          <Ionicons key={index} name="person" size={16} color="#3b82f6" style={calendarStyles.playerIcon} />
+        ));
+      }
+    } else if (booking.type === 'open') {
+      const currentPlayers = booking.players ? booking.players.filter(player => player.status === 'confirmed').length : 0;
+      const icons = [];
+      
+      // Giocatori confermati (blu)
+      for (let i = 0; i < currentPlayers; i++) {
+        icons.push(
+          <Ionicons key={`blue-${i}`} name="person" size={16} color="#3b82f6" style={calendarStyles.playerIcon} />
+        );
+      }
+      
+      // Posti disponibili (rossi)
+      for (let i = 0; i < maxPlayers - currentPlayers; i++) {
+        icons.push(
+          <Ionicons key={`red-${i}`} name="person" size={16} color="#ef4444" style={calendarStyles.playerIcon} />
+        );
+      }
+      
+      return icons;
+    }
+    return null;
+  };
+
+  // Funzione per ottenere l'icona dello slot (emoji)
+  const getSlotIcon = (type) => {
+    switch (type) {
+      case 'school': return '🎾';
+      case 'individual': return '👤';
+      case 'blocked': return '🔧';
+      default: return '';
+    }
+  };
+
   // Funzione helper per generare slot da configurazione
   const generateTimeSlotsFromConfig = (startTime, endTime, slotDuration) => {
     const slots = [];
@@ -98,23 +205,9 @@ const CalendarView = ({
 
     let allSlots = [];
     
-    // Se non ci sono configurazioni, usa quelle di default
+    // Se non ci sono configurazioni, non generare slot predefiniti
     if (dayConfigs.length === 0) {
-      for (let hour = 8; hour <= 22; hour++) {
-        for (let minute = 0; minute < 60; minute += 30) {
-          const start = `${hour.toString().padStart(2, '0')}:${minute.toString().padStart(2, '0')}`;
-          const endMinute = minute + 30;
-          const endHour = endMinute === 60 ? hour + 1 : hour;
-          const endMinuteFormatted = endMinute === 60 ? '00' : endMinute.toString().padStart(2, '0');
-          const end = `${endHour.toString().padStart(2, '0')}:${endMinuteFormatted}`;
-          
-          allSlots.push({
-            start: start,
-            end: end,
-            display: `${start} - ${end}`
-          });
-        }
-      }
+      return [];
     } else {
       // Genera gli slot per ogni configurazione
       dayConfigs.forEach(config => {
@@ -143,7 +236,7 @@ const CalendarView = ({
       
       const dateString = selectedDate.toISOString().split('T')[0];
       const slotStartTime = new Date(`${dateString} ${slot.start}`);
-      
+
       const courtIdFromName = selectedField.replace('Campo ', '');
 
       // Prima controlla se è bloccato manualmente
@@ -172,7 +265,7 @@ const CalendarView = ({
         };
       }
 
-      // Controlla sempre le prenotazioni
+      // Gestione semplificata stati prenotazioni
       const bookedSlot = bookings.find(booking => {
         if (booking.courtName !== selectedField) return false;
         
@@ -183,12 +276,21 @@ const CalendarView = ({
       });
 
       if (bookedSlot) {
+        let type = 'booked';
+        if (bookedSlot.status === 'pending') {
+          type = 'pending';
+        } else if (bookedSlot.type === 'open' && bookedSlot.status === 'waiting') {
+          type = 'open';
+        }
+        
         return {
-          type: 'booked',
+          type: type,
           title: `Prenotato da ${bookedSlot.userFirstName} ${bookedSlot.userLastName}`,
           id: bookedSlot.id,
           isBlock: false,
-          userInfo: `${bookedSlot.userFirstName} ${bookedSlot.userLastName} (${bookedSlot.userName})`
+          userInfo: `${bookedSlot.userFirstName} ${bookedSlot.userLastName}`,
+          bookingStatus: bookedSlot.status,
+          bookingData: bookedSlot
         };
       }
       // Controlla activityType dal planner settimanale
@@ -203,7 +305,13 @@ const CalendarView = ({
           return slotStartTime >= cfgStart && slotStartTime < cfgEnd && cfg.activityType && cfg.activityType !== 'regular';
         });
         if (hit) {
-          return { type: hit.activityType || 'blocked', title: '', id: null, isBlock: true };
+          return { 
+            type: hit.activityType || 'blocked', 
+            title: '', 
+            id: null, 
+            isBlock: true,
+            notes: hit.notes || '' // Aggiungi le note al risultato
+          };
         }
       } catch (e) {
         console.warn('Errore nella lettura activityType:', e);
@@ -216,41 +324,163 @@ const CalendarView = ({
     return { type: 'free', title: '', id: null, isBlock: false };
   };
 
-  const getSlotColor = (type, isSelected = false) => {
-    if (isSelected) return '#8b5cf6'; // Viola per selezione
-    
-    switch (type) {
-      case 'school': return '#3b82f6'; // Blu
-      case 'individual': return '#f59e0b'; // Arancione
-      case 'blocked': return '#ef4444'; // Rosso per bloccato (manutenzione/altro)
-      case 'booked': return '#10b981'; // Verde per prenotazioni
-      default: return '#dcfce7'; // Verde chiaro per libero
+  const getSlotStyle = (slotInfo, isSelected = false, slot) => {
+    if (isSelected) {
+      return [calendarStyles.timeSlot, calendarStyles.timeSlotSelected];
     }
+    
+    // Controlla se lo slot è passato (solo per slot liberi)
+    if (slotInfo.type === 'free' && isSlotPassato(slot, selectedDate)) {
+      return [calendarStyles.timeSlot, calendarStyles.timeSlotPast];
+    }
+    
+    // CASO CORRETTO: Slot liberi non passati
+    if (slotInfo.type === 'free') {
+      return [calendarStyles.timeSlot, calendarStyles.timeSlotFree];
+    }
+    
+    if (slotInfo.type === 'pending') {
+      return [calendarStyles.timeSlot, calendarStyles.timeSlotPending];
+    }
+    
+    // Le prenotazioni open confermate diventano verdi
+    if (slotInfo.type === 'open' && slotInfo.bookingData && slotInfo.bookingData.status === 'confirmed') {
+      return [calendarStyles.timeSlot, calendarStyles.timeSlotBooked];
+    }
+    
+    if (slotInfo.type === 'open') {
+      return [calendarStyles.timeSlot, calendarStyles.timeSlotOpen];
+    }
+    
+    if (slotInfo.type === 'booked') {
+      return [calendarStyles.timeSlot, calendarStyles.timeSlotBooked];
+    }
+    
+    if (slotInfo.type) {
+      switch (slotInfo.type) {
+        case 'school':
+          return [calendarStyles.timeSlot, calendarStyles.timeSlotSchool];
+        case 'individual':
+          return [calendarStyles.timeSlot, calendarStyles.timeSlotIndividual];
+        case 'blocked':
+        default:
+          return [calendarStyles.timeSlot, calendarStyles.timeSlotBlocked];
+      }
+    }
+    
+    return [calendarStyles.timeSlot, calendarStyles.timeSlotFree];
   };
 
-  const getSlotIcon = (type) => {
-    switch (type) {
-      case 'school': return '🎾';
-      case 'individual': return '👤';
-      case 'blocked': return '🔧';
-      case 'booked': return '👥';
-      default: return ''; // Rimuove l'emoji ✅ dagli slot liberi
+  // Funzione helper per descrizione tipo blocco
+  const getBlockTypeDescription = (blockType) => {
+    switch (blockType) {
+      case 'school': return 'Scuola Tennis';
+      case 'individual': return 'Lezione Individuale';
+      case 'blocked': return 'Bloccato';
+      case 'booked': return 'Prenotato';
+      case 'pending': return 'In attesa di conferma';
+      case 'open': return 'Prenotazione Open';
+      default: return blockType;
     }
   };
 
   const handleSlotPress = (slot, slotInfo) => {
     if (isEditMode) {
+      // In modalità edit, controlla se lo slot è passato
+      if (isSlotPassato(slot, selectedDate)) {
+        Alert.alert(
+          'Impossibile bloccare',
+          'Non è possibile bloccare uno slot con orario già passato'
+        );
+        return;
+      }
       onSlotSelect(slot.start);
     } else {
-      let message = `Ora: ${slot.display}\nCampo: ${selectedField}`;
+      let title = 'Info Slot';
+      let message = '';
       
-      if (slotInfo.type !== 'free') {
-        message += `\nStato: ${slotInfo.type === 'booked' ? 'Prenotato' : 'Bloccato'}`;
-        if (slotInfo.title) message += `\nMotivo: ${slotInfo.title}`;
-        if (slotInfo.userInfo) message += `\nUtente: ${slotInfo.userInfo}`;
+      if (slotInfo.type !== 'free' && slotInfo.bookingData) {
+        const booking = slotInfo.bookingData;
+        
+        // Formatta la data in italiano
+        const bookingDate = new Date(booking.date + 'T00:00:00');
+        const dateFormatted = bookingDate.toLocaleDateString('it-IT', {
+          weekday: 'long',
+          day: 'numeric',
+          month: 'long',
+          year: 'numeric'
+        });
+        
+        // Determina il tipo di partita
+        const matchTypeText = booking.matchType === 'singles' ? 'Singolare' : 'Doppio';
+        const bookingTypeText = booking.type === 'open' ? 'Open' : 'Standard';
+        
+        // Conta i giocatori confermati
+        const confirmedPlayers = booking.players.filter(player => player.status === 'confirmed');
+        const currentPlayers = confirmedPlayers.length;
+        const maxPlayers = booking.maxPlayers || (booking.matchType === 'singles' ? 2 : 4);
+        
+        // Prepara l'elenco degli altri giocatori (escludendo il prenotatore)
+        const otherPlayers = confirmedPlayers
+          .filter(player => player.userId !== booking.userId)
+          .map(player => player.userName);
+        
+        // Costruisce il messaggio completo
+        message += `Data: ${dateFormatted}\n`;
+        message += `Orario: ${slot.display}\n`;
+        message += `Campo: ${selectedField}\n`;
+        message += `Tipo: ${bookingTypeText} - ${matchTypeText}\n`;
+        
+        if (booking.type === 'open') {
+          // Messaggio per prenotazioni Open
+          const statusText = booking.status === 'waiting' ? 'In attesa di giocatori' : 'Confermato';
+          message += `Stato: ${statusText}\n`;
+          message += `Giocatori: ${currentPlayers}/${maxPlayers}\n`;
+          message += `Prenotato da: ${booking.userFirstName} ${booking.userLastName}\n`;
+          
+          if (otherPlayers.length > 0) {
+            message += `Altri giocatori: ${otherPlayers.join(', ')}`;
+          } else {
+            message += `Altri giocatori: Nessun altro giocatore confermato`;
+          }
+        } else {
+          // Messaggio per prenotazioni Standard
+          const statusText = booking.status === 'confirmed' ? 'Confermato' : 'In attesa di conferma';
+          message += `Stato: ${statusText}\n`;
+          message += `Prenotato da: ${booking.userFirstName} ${booking.userLastName}\n`;
+          
+          if (otherPlayers.length > 0) {
+            message += `Altri giocatori: ${otherPlayers.join(', ')}`;
+          } else {
+            message += `Altri giocatori: Nessun altro giocatore confermato`;
+          }
+        }
+      } else if (slotInfo.type !== 'free') {
+        // Messaggio per slot bloccati (non prenotazioni)
+        title = `Info Slot - ${getBlockTypeDescription(slotInfo.type)}`;
+        message += `Orario: ${slot.display}\n`;
+        message += `Campo: ${selectedField}\n`;
+        
+        if (slotInfo.title) {
+          message += `${slotInfo.title}\n`;
+        }
+        
+        // AGGIUNTA: Mostra le note se presenti (senza la scritta "Note:")
+        const slotNotes = slotInfo.notes || getSlotNotes(slot, selectedField, selectedDate, slotConfigurations);
+        if (slotNotes) {
+          message += `${slotNotes}\n`;
+        }
+      } else {
+        // Messaggio per slot liberi - controlla se è passato
+        const isPassato = isSlotPassato(slot, selectedDate);
+        if (isPassato) {
+          message = `Orario: ${slot.display}\nCampo: ${selectedField}\nStato: Passato (Non prenotabile)`;
+        } else {
+          message = `Orario: ${slot.display}\nCampo: ${selectedField}\nStato: Libero`;
+        }
       }
       
-      Alert.alert('Info Slot', message, [{ text: 'OK' }]);
+      Alert.alert(title, message, [{ text: 'OK' }]);
     }
   };
 
@@ -267,7 +497,7 @@ const CalendarView = ({
         </Text>
         {isEditMode && (
           <Text style={calendarStyles.editModeText}>
-            Seleziona gli slot da bloccare
+            Seleziona gli slot per blocco una-tantum (solo slot futuri)
           </Text>
         )}
       </View>
@@ -276,19 +506,21 @@ const CalendarView = ({
         {timeSlots.map((slot, index) => {
           const slotInfo = getSlotType(slot);
           const isSelected = selectedSlots.includes(slot.start);
-          const color = getSlotColor(slotInfo.type, isSelected);
+          const slotStyle = getSlotStyle(slotInfo, isSelected, slot);
+          const booking = slotInfo.bookingData;
           const icon = getSlotIcon(slotInfo.type);
+          const isPassato = slotInfo.type === 'free' && isSlotPassato(slot, selectedDate);
 
           return (
             <TouchableOpacity
               key={index}
-              style={[calendarStyles.timeSlot, { backgroundColor: color }]}
+              style={slotStyle}
               onPress={() => handleSlotPress(slot, slotInfo)}
               onLongPress={() => {
-                if (slotInfo.type === 'booked' && userData?.role === 'admin') {
+                if ((slotInfo.type === 'booked' || slotInfo.type === 'pending' || slotInfo.type === 'open') && userData?.role === 'admin') {
                   Alert.alert(
                     'Dettagli Prenotazione',
-                    `Prenotato da: ${slotInfo.userInfo}\nOra: ${slot.display}\nCampo: ${selectedField}`,
+                    `Prenotato da: ${slotInfo.userInfo}\nOra: ${slot.display}\nCampo: ${selectedField}\nStato: ${slotInfo.bookingStatus || 'confermato'}`,
                     [
                       { 
                         text: 'Elimina Prenotazione', 
@@ -299,35 +531,65 @@ const CalendarView = ({
                     ]
                   );
                 } else if (slotInfo.type !== 'free' && userData?.role === 'admin' && slotInfo.isBlock) {
+                  // AGGIUNTA: Mostra le note anche nel long press
+                  const slotNotes = slotInfo.notes || getSlotNotes(slot, selectedField, selectedDate, slotConfigurations);
+                  let longPressMessage = `Vuoi eliminare il blocco delle ${slot.start}?`;
+                  
+                  if (slotInfo.title) {
+                    longPressMessage += `\nMotivo: ${slotInfo.title}`;
+                  }
+                  
+                  if (slotNotes) {
+                    longPressMessage += `\n${slotNotes}`;
+                  }
+                  
                   Alert.alert(
-                    'Elimina Blocco',
-                    `Vuoi eliminare il blocco delle ${slot.start}?\nMotivo: ${slotInfo.title || 'Nessun titolo'}`,
-                    [
+                    slotInfo.id ? 'Elimina Blocco' : 'Info Blocco',
+                    longPressMessage,
+                    slotInfo.id ? [
                       { text: 'Annulla', style: 'cancel' },
                       { 
                         text: 'Elimina', 
                         onPress: () => onDeleteBlock(slotInfo.id) 
                       }
+                    ] : [
+                      { text: 'OK', style: 'default' }
                     ]
+                  );
+                } else if (isPassato) {
+                  Alert.alert(
+                    'Info Slot',
+                    `Orario: ${slot.display}\nCampo: ${selectedField}\nStato: Passato (Non prenotabile)`
                   );
                 }
               }}
+              disabled={isEditMode && isPassato} // Disabilita la selezione in edit mode per slot passati
             >
-              <View style={calendarStyles.slotContent}>
+              <View style={[
+                calendarStyles.slotContent,
+                slotInfo.type === 'free' && calendarStyles.slotContentFree
+              ]}>
                 <Text style={[
                   calendarStyles.slotText,
-                  slotInfo.type === 'free' && calendarStyles.slotTextFree,
-                  isSelected && calendarStyles.slotTextSelected
+                  isSelected && calendarStyles.slotTextSelected,
+                  (slotInfo.type === 'booked' || slotInfo.type === 'pending' || slotInfo.type === 'open') && calendarStyles.slotTextBooked,
+                  (slotInfo.type === 'school' || slotInfo.type === 'individual' || slotInfo.type === 'blocked') && calendarStyles.slotTextBlocked,
+                  slotInfo.type === 'open' && calendarStyles.slotTextOpen,
+                  isPassato && calendarStyles.slotTextPast
                 ]}>
                   {slot.display}
                 </Text>
-                <Text style={calendarStyles.slotIcon}>
-                  {icon}
-                </Text>
+                
+                {booking && (slotInfo.type === 'booked' || slotInfo.type === 'pending' || slotInfo.type === 'open') ? (
+                  <View style={calendarStyles.playersIconsContainer}>
+                    {renderPlayerIcons(booking)}
+                  </View>
+                ) : icon !== '' ? (
+                  <Text style={calendarStyles.slotIcon}>{icon}</Text>
+                ) : (
+                  <View style={calendarStyles.emptyIconContainer} />
+                )}
               </View>
-              {isSelected && (
-                <Ionicons name="checkmark-circle" size={16} color="white" style={calendarStyles.selectedIcon} />
-              )}
             </TouchableOpacity>
           );
         })}
@@ -350,6 +612,7 @@ const CalendarManagement = () => {
   const [blockType, setBlockType] = useState('school');
   const [showCreationGuide, setShowCreationGuide] = useState(false);
   const [slotConfigurations, setSlotConfigurations] = useState({});
+  const [showLegendModal, setShowLegendModal] = useState(false); // Nuovo stato per il modal della legenda
 
   const { userData } = useAuth();
 
@@ -440,28 +703,28 @@ const CalendarManagement = () => {
           setLoading(false);
           
           if (error.code === 'permission-denied') {
-          console.warn('Permessi insufficienti per accedere agli slot bloccati');
-          // Mostra un avviso all'utente
-          Alert.alert('Errore', 'Permessi insufficienti per accedere agli slot bloccati');
+            console.warn('Permessi insufficienti per accedere agli slot bloccati');
+            Alert.alert('Errore', 'Permessi insufficienti per accedere agli slot bloccati');
+          }
         }
-      }
-    );
+      );
 
-    return () => unsubscribe();
-  } catch (error) {
-    console.error('Error fetching blocked slots:', error);
-    setLoading(false);
-  }
-};
+      return () => unsubscribe();
+    } catch (error) {
+      console.error('Error fetching blocked slots:', error);
+      setLoading(false);
+    }
+  };
 
   const fetchBookings = async () => {
     try {
       const dateString = selectedDate.toISOString().split('T')[0];
+      // Modifica la query per includere tutti gli stati delle prenotazioni
       const q = query(
         collection(db, 'bookings'),
         where('courtName', '==', selectedFieldName),
         where('date', '==', dateString),
-        where('status', '==', 'confirmed')
+        where('status', 'in', ['confirmed', 'waiting', 'pending'])
       );
 
       const querySnapshot = await getDocs(q);
@@ -511,6 +774,16 @@ const CalendarManagement = () => {
   };
 
   const handleSlotSelect = (slot) => {
+    // Controlla se lo slot è passato prima di permettere la selezione
+    const slotObj = { start: slot };
+    if (isSlotPassato(slotObj, selectedDate)) {
+      Alert.alert(
+        'Impossibile selezionare',
+        'Non è possibile selezionare slot con orario già passato'
+      );
+      return;
+    }
+    
     setSelectedSlots(prev => {
       if (prev.includes(slot)) {
         return prev.filter(s => s !== slot);
@@ -529,6 +802,18 @@ const CalendarManagement = () => {
     if (!blockTitle.trim()) {
       Alert.alert('Errore', 'Inserisci un titolo per il blocco');
       return;
+    }
+
+    // Verifica che tutti gli slot selezionati non siano passati
+    for (const slot of selectedSlots) {
+      const slotObj = { start: slot };
+      if (isSlotPassato(slotObj, selectedDate)) {
+        Alert.alert(
+          'Errore',
+          `Impossibile bloccare lo slot ${slot} perché è già passato`
+        );
+        return;
+      }
     }
 
     try {
@@ -550,6 +835,7 @@ const CalendarManagement = () => {
           start: Timestamp.fromDate(startDateTime),
           end: Timestamp.fromDate(endDateTime),
           createdAt: Timestamp.now(),
+          isRecurring: false // Aggiunto per distinguere i blocchi una-tantum
         });
       }
       
@@ -621,7 +907,7 @@ const CalendarManagement = () => {
               
               // Gestione specifica per errori di permesso
               if (error.code === 'permission-denied') {
-                Alert.alert('Errore', 'Non hai i permessi per eliminare le prenotazioni');
+                Alert.alert('Errore', 'Non hai i permessi per eliminare les prenotazioni');
               } else if (error.code === 'not-found') {
                 Alert.alert('Errore', 'Prenotazione non trovata');
               } else {
@@ -646,6 +932,127 @@ const CalendarManagement = () => {
     setSelectedSlots([]);
   };
 
+  // Componente per il modal della legenda
+  const LegendModal = () => (
+    <Modal
+      visible={showLegendModal}
+      animationType="slide"
+      transparent={true}
+      onRequestClose={() => setShowLegendModal(false)}
+    >
+      <View style={styles.legendModalContainer}>
+        <View style={styles.legendModalContent}>
+          {/* Header del modal */}
+          <View style={styles.legendHeader}>
+            <View style={styles.legendTitleContainer}>
+              <Ionicons name="information-circle" size={24} color="#3b82f6" />
+              <Text style={styles.legendTitle}>Guida alla Creazione Slot</Text>
+            </View>
+            <TouchableOpacity 
+              onPress={() => setShowLegendModal(false)}
+              style={styles.legendCloseButton}
+            >
+              <Ionicons name="close" size={24} color="#64748b" />
+            </TouchableOpacity>
+          </View>
+
+          <ScrollView style={styles.legendScrollContent} showsVerticalScrollIndicator={false}>
+            {/* Sezione Stati Slot */}
+            <View style={styles.legendSection}>
+              <Text style={styles.legendSectionTitle}>Stati degli Slot</Text>
+              <View style={styles.legendGrid}>
+                <View style={styles.legendItem}>
+                  <View style={[styles.legendColorBox, styles.legendFree]} />
+                  <Text style={styles.legendText}>Libero</Text>
+                </View>
+                <View style={styles.legendItem}>
+                  <View style={[styles.legendColorBox, styles.legendPast]} />
+                  <Text style={styles.legendText}>Libero (Passato)</Text>
+                </View>
+                <View style={styles.legendItem}>
+                  <View style={[styles.legendColorBox, styles.legendBooked]} />
+                  <Text style={styles.legendText}>Prenotazioni Confermate</Text>
+                </View>
+                <View style={styles.legendItem}>
+                  <View style={[styles.legendColorBox, styles.legendOpen]} />
+                  <Text style={styles.legendText}>Prenotazioni in Attesa</Text>
+                </View>
+                <View style={styles.legendItem}>
+                  <View style={[styles.legendColorBox, styles.legendSchool]} />
+                  <Text style={styles.legendText}>Scuola Tennis</Text>
+                </View>
+                <View style={styles.legendItem}>
+                  <View style={[styles.legendColorBox, styles.legendIndividual]} />
+                  <Text style={styles.legendText}>Lezione Individuale</Text>
+                </View>
+                <View style={styles.legendItem}>
+                  <View style={[styles.legendColorBox, styles.legendBlocked]} />
+                  <Text style={styles.legendText}>Bloccato</Text>
+                </View>
+                {isEditMode && (
+                  <View style={styles.legendItem}>
+                    <View style={[styles.legendColorBox, styles.legendSelected]} />
+                    <Text style={styles.legendText}>Selezionato</Text>
+                  </View>
+                )}
+              </View>
+            </View>
+
+            {/* Sezione Icone Giocatori */}
+            <View style={styles.legendSection}>
+              <Text style={styles.legendSectionTitle}>Icone Giocatori</Text>
+              <View style={styles.legendIconsContainer}>
+                <View style={styles.legendIconItem}>
+                  <Ionicons name="person" size={20} color="#3b82f6" />
+                  <Text style={styles.legendText}>Giocatore confermato</Text>
+                </View>
+              <View style={styles.legendIconItem}>
+                  <Ionicons name="person" size={20} color="#ef4444" />
+                  <Text style={styles.legendText}>Posto disponibile (Open)</Text>
+                </View>
+              </View>
+            </View>
+
+            {/* Sezione Istruzioni per Admin */}
+            {userData?.role === 'admin' && (
+              <View style={styles.legendSection}>
+                <Text style={styles.legendSectionTitle}>Istruzioni per Admin</Text>
+                <View style={styles.instructionsList}>
+                  <View style={styles.instructionItem}>
+                    <Ionicons name="create-outline" size={16} color="#3b82f6" />
+                    <Text style={styles.instructionText}>Crea blocchi una-tantum per eventi speciali</Text>
+                  </View>
+                  <View style={styles.instructionItem}>
+                    <Ionicons name="calendar-outline" size={16} color="#3b82f6" />
+                    <Text style={styles.instructionText}>Usa il Planner Settimanale per programmazione ricorrente</Text>
+                  </View>
+                  <View style={styles.instructionItem}>
+                    <Ionicons name="time-outline" size={16} color="#3b82f6" />
+                    <Text style={styles.instructionText}>Non è possibile bloccare slot con orario passato</Text>
+                  </View>
+                  <View style={styles.instructionItem}>
+                    <Ionicons name="trash-outline" size={16} color="#ef4444" />
+                    <Text style={styles.instructionText}>Tocca a lungo su un blocco per eliminarlo</Text>
+                  </View>
+                </View>
+              </View>
+            )}
+          </ScrollView>
+
+          {/* Footer del modal */}
+          <View style={styles.legendFooter}>
+            <TouchableOpacity 
+              style={styles.legendGotItButton}
+              onPress={() => setShowLegendModal(false)}
+            >
+              <Text style={styles.legendGotItButtonText}>Ho capito!</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </View>
+    </Modal>
+  );
+
   if (loading) {
     return (
       <View style={styles.loadingContainer}>
@@ -657,7 +1064,7 @@ const CalendarManagement = () => {
 
   return (
     <View style={styles.container}>
-      <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 24 }} style={{ flex: 1, backgroundColor: '#f3f4f6' }} 
+      <ScrollView
         style={styles.scrollView}
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={true}
@@ -713,13 +1120,13 @@ const CalendarManagement = () => {
         </View>
 
         {/* Pulsante per creare blocco */}
-        {false && userData?.role === 'admin' && !isEditMode && (
+        {userData?.role === 'admin' && !isEditMode && (
           <TouchableOpacity
             style={styles.createBlockButton}
             onPress={startBlockCreation}
           >
             <Ionicons name="lock-closed" size={20} color="white" />
-            <Text style={styles.createBlockText}>Crea Nuovo Blocco</Text>
+            <Text style={styles.createBlockText}>Crea Blocco Una-Tantum</Text>
           </TouchableOpacity>
         )}
 
@@ -728,16 +1135,24 @@ const CalendarManagement = () => {
           <View style={styles.creationGuide}>
             <Text style={styles.guideTitle}>Modalità creazione blocchi attiva</Text>
             <Text style={styles.guideText}>
-              Seleziona gli slot che vuoi bloccare, poi clicca "Conferma Blocco"
+              Seleziona gli slot che vuoi bloccare per eventi una-tantum, poi clicca "Conferma Blocco"
             </Text>
             
             <View style={styles.usageExamples}>
               <Text style={styles.exampleTitle}>Esempi di utilizzo:</Text>
-              <Text style={styles.example}>• 🎾 Scuola tennis (under 12, agonistica)</Text>
-              <Text style={styles.example}>• 👤 Lezioni con istruttore</Text>
-              <Text style={styles.example}>• 🏆 Preparazione tornei</Text>
-              <Text style={styles.example}>• 🔧 Manutenzione campo</Text>
+              <Text style={styles.example}>• 🏆 Tornei e eventi speciali</Text>
+              <Text style={styles.example}>• 🔧 Manutenzione straordinaria</Text>
+              <Text style={styles.example}>• 🎉 Eventi privati</Text>
+              <Text style={styles.example}>• ❌ Chiusure improvvise</Text>
             </View>
+
+            <Text style={styles.noteText}>
+              Nota: Per programmazione ricorrente (scuola tennis, lezioni) usa la Configurazione Slot
+            </Text>
+
+            <Text style={styles.warningText}>
+              ⚠️ Attenzione: Non è possibile bloccare slot con orario già passato
+            </Text>
 
             <TouchableOpacity 
               style={styles.cancelCreationButton}
@@ -753,6 +1168,7 @@ const CalendarManagement = () => {
           <TouchableOpacity
             style={styles.confirmBlockButton}
             onPress={() => setShowEditModal(true)}
+            disabled={loading}
           >
             <Ionicons name="save" size={20} color="white" />
             <Text style={styles.confirmBlockText}>
@@ -761,34 +1177,15 @@ const CalendarManagement = () => {
           </TouchableOpacity>
         )}
 
-        {/* Legenda Colorata */}
-        <View style={styles.legend}>
-          <View style={styles.legendItem}>
-            <View style={[styles.legendColor, { backgroundColor: '#dcfce7' }]} />
-            <Text style={styles.legendText}>Libero</Text>
-          </View>
-          <View style={styles.legendItem}>
-            <View style={[styles.legendColor, { backgroundColor: '#3b82f6' }]} />
-            <Text style={styles.legendText}>Scuola Tennis</Text>
-          </View>
-          <View style={styles.legendItem}>
-            <View style={[styles.legendColor, { backgroundColor: '#f59e0b' }]} />
-            <Text style={styles.legendText}>Lezioni</Text>
-          </View>
-          <View style={styles.legendItem}>
-            <View style={[styles.legendColor, { backgroundColor: '#ef4444' }]} />
-            <Text style={styles.legendText}>Bloccato</Text>
-          </View>
-          <View style={styles.legendItem}>
-            <View style={[styles.legendColor, { backgroundColor: '#10b981' }]} />
-            <Text style={styles.legendText}>Prenotazioni Utenti</Text>
-          </View>
-          {isEditMode && (
-            <View style={styles.legendItem}>
-              <View style={[styles.legendColor, { backgroundColor: '#8b5cf6' }]} />
-              <Text style={styles.legendText}>Selezionato</Text>
-            </View>
-          )}
+        {/* Pulsante per aprire la legenda */}
+        <View style={styles.legendButtonContainer}>
+          <TouchableOpacity 
+            style={styles.legendButton}
+            onPress={() => setShowLegendModal(true)}
+          >
+            <Ionicons name="information-circle-outline" size={20} color="#3b82f6" />
+            <Text style={styles.legendButtonText}>Guida alla Creazione Slot</Text>
+          </TouchableOpacity>
         </View>
 
         {/* Calendario Visuale */}
@@ -827,7 +1224,7 @@ const CalendarManagement = () => {
         >
           <View style={styles.modalContainer}>
             <View style={styles.modalContent}>
-              <Text style={styles.modalTitle}>Crea Blocco Orario</Text>
+              <Text style={styles.modalTitle}>Crea Blocco Una-Tantum</Text>
               
               <Text style={styles.sectionTitle}>Dettagli Blocco</Text>
               
@@ -846,7 +1243,7 @@ const CalendarManagement = () => {
               <Text style={styles.modalLabel}>Titolo del Blocco *</Text>
               <TextInput
                 style={styles.modalInput}
-                placeholder="Es: Scuola Tennis Under 12"
+                placeholder="Es: Torneo Under 16"
                 value={blockTitle}
                 onChangeText={setBlockTitle}
               />
@@ -914,6 +1311,9 @@ const CalendarManagement = () => {
           </View>
         </Modal>
       </ScrollView>
+
+      {/* Modal per la legenda */}
+      <LegendModal />
     </View>
   );
 };
@@ -1037,6 +1437,18 @@ const styles = StyleSheet.create({
     color: '#0c4a6e',
     marginLeft: 8,
   },
+  noteText: {
+    fontSize: 12,
+    color: '#0369a1',
+    fontStyle: 'italic',
+    marginBottom: 8,
+  },
+  warningText: {
+    fontSize: 12,
+    color: '#dc2626',
+    fontWeight: '600',
+    marginBottom: 8,
+  },
   cancelCreationButton: {
     alignSelf: 'flex-start',
     padding: 8,
@@ -1061,28 +1473,25 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
     fontSize: 16,
   },
-  legend: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    justifyContent: 'center',
+  legendButtonContainer: {
+    alignItems: 'center',
     marginBottom: 20,
-    padding: 0,
-    gap: 12,
   },
-  legendItem: {
+  legendButton: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginRight: 16,
+    backgroundColor: 'white',
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderRadius: 25,
+    borderWidth: 1,
+    borderColor: '#3b82f6',
+    gap: 8,
   },
-  legendColor: {
-    width: 16,
-    height: 16,
-    borderRadius: 4,
-    marginRight: 8,
-  },
-  legendText: {
-    fontSize: 12,
-    color: '#374151',
+  legendButtonText: {
+    color: '#3b82f6',
+    fontWeight: '600',
+    fontSize: 14,
   },
   bottomSpacer: {
     height: 50,
@@ -1191,10 +1600,148 @@ const styles = StyleSheet.create({
     color: 'white',
     fontWeight: '600',
   },
+  // Stili per il modal della legenda
+  legendModalContainer: {
+    flex: 1,
+    justifyContent: 'flex-end',
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+  },
+  legendModalContent: {
+    backgroundColor: 'white',
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    maxHeight: '85%',
+    paddingBottom: Platform.OS === 'ios' ? 34 : 20,
+  },
+  legendHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: 20,
+    borderBottomWidth: 1,
+    borderBottomColor: '#e2e8f0',
+  },
+  legendTitleContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  legendTitle: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: '#1e293b',
+  },
+  legendCloseButton: {
+    padding: 4,
+  },
+  legendScrollContent: {
+    padding: 20,
+  },
+  legendSection: {
+    marginBottom: 24,
+  },
+  legendSectionTitle: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#374151',
+    marginBottom: 12,
+  },
+  legendGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 12,
+  },
+  legendItem: {
+    width: '48%',
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 8,
+    gap: 8,
+  },
+  legendColorBox: {
+    width: 20,
+    height: 20,
+    borderRadius: 4,
+    borderWidth: 1,
+  },
+  legendFree: {
+    backgroundColor: '#dcfce7',
+    borderColor: '#bbf7d0',
+  },
+  legendPast: {
+    backgroundColor: '#d1d5db',
+    borderColor: '#9ca3af',
+  },
+  legendBooked: {
+    backgroundColor: '#10b981',
+    borderColor: '#059669',
+  },
+  legendOpen: {
+    backgroundColor: '#fef08a',
+    borderColor: '#dac945',
+  },
+  legendSchool: {
+    backgroundColor: '#93c5fd',
+    borderColor: '#3b82f6',
+  },
+  legendIndividual: {
+    backgroundColor: '#f59e0b',
+    borderColor: '#ea580c',
+  },
+  legendBlocked: {
+    backgroundColor: '#ef4444',
+    borderColor: '#dc2626',
+  },
+  legendSelected: {
+    backgroundColor: '#8b5cf6',
+    borderColor: '#7c3aed',
+  },
+  legendText: {
+    fontSize: 12,
+    color: '#374151',
+    flex: 1,
+  },
+  legendIconsContainer: {
+    gap: 12,
+  },
+  legendIconItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  instructionsList: {
+    gap: 10,
+  },
+  instructionItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  instructionText: {
+    fontSize: 14,
+    color: '#374151',
+    flex: 1,
+  },
+  legendFooter: {
+    paddingHorizontal: 20,
+    paddingTop: 16,
+    borderTopWidth: 1,
+    borderTopColor: '#e2e8f0',
+  },
+  legendGotItButton: {
+    backgroundColor: '#3b82f6',
+    paddingVertical: 14,
+    borderRadius: 12,
+    alignItems: 'center',
+  },
+  legendGotItButtonText: {
+    color: 'white',
+    fontSize: 16,
+    fontWeight: '600',
+  },
 });
 
 // Stili per il componente CalendarView
-
 const calendarStyles = StyleSheet.create({
   container: { backgroundColor: '#f3f4f6', padding: 16 },
   header: {
@@ -1213,61 +1760,111 @@ const calendarStyles = StyleSheet.create({
     color: '#ef4444',
     fontWeight: '600',
   },
-  dateRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 },
-  navBtn: { backgroundColor: '#e5edff', padding: 10, borderRadius: 10 },
-  dateDisplay: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#eef2ff', paddingVertical: 10, paddingHorizontal: 14, borderRadius: 10 },
-  dateText: { fontSize: 16, color: '#1f2937' },
-  courtRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 12 },
-  courtLabel: { fontSize: 16, color: '#374151', marginRight: 8 },
-  courtBtn: { backgroundColor: '#e5e7eb', paddingVertical: 8, paddingHorizontal: 14, borderRadius: 10, marginRight: 8 },
-  courtBtnActive: { backgroundColor: '#3b82f6' },
-  courtBtnText: { color: '#3b82f6', fontWeight: '600' },
-  courtBtnTextActive: { color: '#fff' },
-
   timeGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
+    gap: 6,
     justifyContent: 'space-between',
   },
   timeSlot: {
-    width: '31%',
+    justifyContent: 'center',
     height: 68,
+    width: '31%',
     padding: 0,
+    borderWidth: 1,
     borderRadius: 16,
     alignItems: 'center',
-    justifyContent: 'center',
     marginBottom: 12,
-    backgroundColor: '#dcfce7',
-    shadowColor: '#000',
-    shadowOpacity: 0.08,
-    shadowRadius: 6,
-    shadowOffset: { width: 0, height: 2 },
-    elevation: 2,
+    minHeight: 50,
     position: 'relative',
+  },
+  timeSlotFree: {
+    backgroundColor: '#dcfce7',
+    borderColor: '#83d6a0',
+  },
+  timeSlotPast: {
+    backgroundColor: '#d1d5db',
+    borderColor: '#9ca3af',
+  },
+  timeSlotSelected: {
+    backgroundColor: '#8b5cf6',
+    borderColor: '#7c3aed',
+  },
+  timeSlotBooked: {
+    backgroundColor: '#10b981',
+    borderColor: '#059669',
+  },
+  timeSlotPending: {
+    backgroundColor: '#fef08a',
+    borderColor: '#dac945',
+  },
+  timeSlotOpen: {
+    backgroundColor: '#fef08a',
+    borderColor: '#dac945',
+  },
+  timeSlotSchool: {
+    backgroundColor: '#93c5fd',
+    borderColor: '#3b82f6',
+  },
+  timeSlotIndividual: {
+    backgroundColor: '#f59e0b',
+    borderColor: '#ea580c',
+  },
+  timeSlotBlocked: {
+    backgroundColor: '#ef4444',
+    borderColor: '#dc2626',
   },
   slotContent: {
     alignItems: 'center',
+    justifyContent: 'center',
+    height: '100%',
+    paddingTop: 2,
+    position: 'relative',
+  },
+  slotContentFree: {
+    // Rimuoviamo qualsiasi stile speciale per gli slot liberi
   },
   slotText: {
     fontSize: 13,
-    fontWeight: '600',
+    fontWeight: 'bold',
     textAlign: 'center',
     color: '#111827',
     includeFontPadding: false,
+    marginBottom: 4,
   },
   slotTextSelected: {
     color: 'white',
+  },
+  slotTextBooked: {
+    color: 'black',
+  },
+  slotTextBlocked: {
+    color: '#111827',
+  },
+  slotTextOpen: {
+    color: '#111827',
+  },
+  slotTextPast: {
+    color: '#6b7280',
   },
   slotIcon: {
     fontSize: 16,
     marginTop: 2,
   },
-  selectedIcon: {
-    position: 'absolute',
-    top: 4,
-    right: 4,
+  playersIconsContainer: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'center',
+    marginTop: 2,
+  },
+  playerIcon: {
+    marginHorizontal: 1,
+    fontSize: 16,
+  },
+  emptyIconContainer: {
+    height: 20,
+    width: '100%',
   },
 });
-
 
 export default CalendarManagement;

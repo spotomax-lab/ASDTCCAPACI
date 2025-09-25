@@ -1,0 +1,62 @@
+DA FARE
+
+Possibilità di eliminare la funzione di salva configurazione per creare dei singoli slot e utilizzare solo la funzione salva già presente nel modal? E magari attivare "Salva configurazione" solo per orari e giorni per cui farò azione di copia - incolla o ripeti per X settimane.
+
+PrenotazioniScreen.tsx sembra ridondante perché abbiamo MyBookingsScreen.tsx che fa una cosa simile (ma più aggiornata e specifica). Tuttavia, nota che PrenotazioniScreen mostra anche prenotazioni cancellate/eliminate, mentre MyBookingsScreen solo confermate. Quindi, se vogliamo mostrare all'utente tutte le prenotazioni (in vari stati) allora potrebbe essere utile. Ma attualmente, MyBookingsScreen è utilizzato per le confermate e OpenMatchesScreen per le open. Quindi, forse PrenotazioniScreen non è più utilizzato.
+
+
+
+
+DUBBI
+
+Gli admin hanno la pagina prenota che si comporta in maniera diversa dagli utenti normali.
+
+NotificationsScreen potrebbe essere utile per mostrare tutte le notifiche (non solo inviti) ma al momento sembra gestire solo gli inviti. Quindi, forse è ridondante con OpenMatchesScreen che già mostra gli inviti. Tuttavia, le notifiche potrebbero essere utilizzate per altri scopi (es. messaggi di sistema). Se vogliamo mantenere un sistema di notifiche generale, allora va tenuto. Altrimenti, se gli inviti sono gestiti in OpenMatchesScreen, allora NotificationsScreen potrebbe essere rimosso.
+NotificationsScreen Viene utilizzato nel tab "Notifiche". Tuttavia, se vogliamo mantenere le notifiche solo per gli inviti, allora è ridondante con OpenMatchesScreen. Possiamo considerare di rimuovere il tab Notifiche e quindi il file, oppure espandere le notifiche per includere altri tipi. Al momento, sembra che le notifiche siano solo per inviti, quindi forse è meglio rimuoverlo e usare solo OpenMatchesScreen.
+
+
+
+
+RISOLTI
+
+Le prenotazioni cancellate non devono essere contate nel limite settimanale
+
+Risolvere il problema degli slot a mezz'ora che si visualizzano quando calender vuoto 
+
+Info degli slot bloccati più dettagliate.
+
+Contatore prenotazioni non funziona. "Hai effettuato 0/5 prenotazioni questa settimana"
+
+Notifiche non arrivano agli altri giocatori (Fatto ma da testare)
+
+Modalità open: possibilità di invitare tanti giocatori, poi chi per primo accetta l'invito chiude lo slot.
+
+Uniformare i colori e le icone degli slot tra booking e calendar
+
+Il cestino nelle prenotazioni confermate dobbiamo metterlo in basso, sulla stessa riga delle info orario della prenotazione, tutto sulla destra.
+
+Inserire nella pagina "Le mie prenotazioni" anche quelle in attesa di giocatori (ovviamente con visualizzazione differente)
+
+La spunta su "applica a Lun - Ven" non è deselezionabile
+
+In una prenotazione Open, se un giocatore si unisce ad una partita ma dopo clicca il tasto per la cancellazione, si cancella l'intera prenotazione e non solo il suo inserimento. Tra l'altro per alcuni giocatori creati per i test, anche se ci sono ancora slot liberi, la prenotazione passa al colore verde, con stato confermato, anche se nello slot ci sono 2 icone blu e 2 rosse e nelle info risulta: Giocatori 2/4.
+
+Implementare le info sugli slot e sulle pagine
+
+Se in una partita open un giocatore preferito vuole accettare l'invito e clicca sullo slot, se nell'alert che compare clicca su "Unisciti alla prenotazione" appare un alert che dice "Sei già in questa prenotazione" e non fa proseguire. Ma se con lo stesso giocatore cerco di accettare l'invito dalla lista delle partite open, quando clicco su "accetta invito" appare invece un alert che dice "Questa partita ha già raggiunto il numero massimo di giocatori", ma le info dicono che i giocatori invece sono 1/4. Praticamente il giocatore invitato è per una parte della logica del sistema già facente parte della partita, ma non è così e nella logica strutturale non deve essere così. Il giocatore che riceve un invito deve comunque accettarlo per essere parte della partita e non deve avere un posto riservato all'interno della prenotazione.
+
+Come prenotare, la legenda in un modal
+
+Orari disponibili ---> Calendario giornaliero (Orario giornaliero)
+
+Lato admin il modal con campo opzionale che diventa obbligatorio e da visualizzare nelle info slot. Quando l'admin crea gli slot, vorrei ci fosse la possibilità di creare un nuovo slot partendo dall'orario di fine di quello precedentemente inserito (esempio slot 07:30 - 08:45 già creato, vorrei che cliccando sullo slot vuoto mi dasse come orario di inizio preimpostato le ore 08:45). Poi vorrei poter digitare le cifre orarie da inserire nel modal senza preoccuparmi di dover mettere ":" tra le ore e i minuti, cioè se digito 1130 il sistema dovrebbe automaticamente riconoscerlo come "11:30"
+
+Password di conferma in registrazione
+
+Implementare la funzionalità di ripetizione per più settimane in slotconfigurationscreen.tsx e correggere la mancanza di scroll sulla pagina, il bottone "salva configurazione" si vede per metà
+
+Togliere il campo "oggi" dal calendario di SlotConfigurationScreen.tsx
+
+Legenda degli admin su modal come per il booking
+
+Se ci si registra e poi si clicca su una partita open per accettarla, nello slot info non si compare con nome e cognome ma con mail.
